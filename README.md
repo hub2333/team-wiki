@@ -1,6 +1,12 @@
 # Team Wiki
 
-将 Obsidian 格式的 Markdown 知识库转化为 AI 可调用的知识图谱服务，提供 **Web UI 对话**、**MCP 协议**、**REST API** 三种接入方式。
+Karpathy 的 [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) + Obsidian 双链笔记是优秀的个人知识管理实践，但公开给团队使用并不方便。
+
+本项目解决这个问题：将已生成的 LLM Wiki 文档路径 + DeepSeek key 配置好，完成前后端部署即可获得：
+
+- **Web Chat 页面** — 浏览器直接对话
+- **MCP 协议** — 对接市面成熟 Agent 产品（Claude Desktop、Cursor 等）
+- **REST API** — 自研 Agent 产品集成调用
 
 ## 架构
 

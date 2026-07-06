@@ -47,7 +47,8 @@ team-wiki/
 │   ├── README.md
 │   ├── rest-api.md
 │   ├── mcp.md
-│   └── system-prompt.md
+│   ├── system-prompt.md
+│   └── system-architecture.md
 ├── scripts/
 │   ├── build.sh
 │   ├── dev.sh
@@ -383,6 +384,7 @@ npm run dev -- --env-file .env.postgres
 - [REST API 接入](./doc/rest-api.md)
 - [MCP 接入](./doc/mcp.md)
 - [System Prompt 机制与使用](./doc/system-prompt.md)
+- [系统架构说明](./doc/system-architecture.md)
 
 说明：
 

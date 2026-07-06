@@ -22,6 +22,7 @@ import { loadConfig, type AppConfig } from './config.js';
 import { closeDb, initDb } from './db/index.js';
 import { createAuthMiddleware } from './auth/index.js';
 import { createChatRouter } from './chat/index.js';
+import { resolveKnowledgeAgentPrompt } from './agent/prompts.js';
 import { createLogger } from './utils/logger.js';
 import type { ServerConfig } from './types.js';
 
@@ -129,6 +130,16 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
 
   await watcher.start();
 
+  const systemPrompt = resolveKnowledgeAgentPrompt(graph, config);
+  log.info('agent_prompt_ready', {
+    mode: config.agentSystemPromptFile
+      ? 'file+dynamic'
+      : config.agentSystemPrompt
+        ? 'inline+dynamic'
+        : 'default+dynamic',
+    promptChars: systemPrompt.length,
+  });
+
   // 7. Conditionally register MCP routes on Express (for external AI tools)
   let mcp: McpService | null = null;
   if (config.mcpEnabled) {
@@ -143,7 +154,9 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
   }
 
   // 8. Register Chat API routes
-  const chatRouter = createChatRouter(graph, config);
+  const chatRouter = createChatRouter(graph, config, {
+    systemPrompt,
+  });
   app.use('/api', chatRouter);
 
   // 9. Web UI disabled (frontend removed)

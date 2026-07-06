@@ -8,7 +8,7 @@
  */
 
 import { config as loadDotenv } from 'dotenv';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ServerConfig } from './types.js';
 
@@ -40,6 +40,10 @@ export interface AppConfig extends ServerConfig {
   webDir: string;
   /** Allowed CORS origins ("*" means any origin) */
   corsOrigins: string[];
+  /** Optional resolved agent system prompt override */
+  agentSystemPrompt: string;
+  /** Optional agent system prompt file path */
+  agentSystemPromptFile: string;
 }
 
 export function loadConfig(overrides?: Record<string, string | undefined>): AppConfig {
@@ -75,6 +79,8 @@ export function loadConfig(overrides?: Record<string, string | undefined>): AppC
       .split(',')
       .map(s => s.trim())
       .filter(Boolean),
+    agentSystemPrompt: loadAgentSystemPrompt(env),
+    agentSystemPromptFile: resolveAgentSystemPromptFile(env),
   };
 }
 
@@ -108,4 +114,18 @@ function getCliEnvFile(): string | undefined {
 
 function normalizeDbProvider(raw: string | undefined): 'sqlite' | 'postgres' {
   return raw === 'postgres' ? 'postgres' : 'sqlite';
+}
+
+function resolveAgentSystemPromptFile(env: Record<string, string | undefined>): string {
+  const raw = env.AGENT_SYSTEM_PROMPT_FILE?.trim();
+  return raw ? resolve(raw) : '';
+}
+
+function loadAgentSystemPrompt(env: Record<string, string | undefined>): string {
+  const filePath = resolveAgentSystemPromptFile(env);
+  if (filePath && existsSync(filePath)) {
+    return readFileSync(filePath, 'utf-8').trim();
+  }
+
+  return env.AGENT_SYSTEM_PROMPT?.trim() || '';
 }

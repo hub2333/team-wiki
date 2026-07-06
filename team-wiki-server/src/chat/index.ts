@@ -27,7 +27,10 @@ function estimateTokens(chars: number): number {
 
 export function createChatRouter(
   graph: KnowledgeGraph,
-  config: AppConfig
+  config: AppConfig,
+  options?: {
+    systemPrompt?: string;
+  }
 ): Router {
   const router = Router();
 
@@ -90,6 +93,7 @@ export function createChatRouter(
       // 3. Create agent with direct KnowledgeGraph tools
       const agent = createKnowledgeAgent(graph, {
         model: (config as any).aiModel || 'deepseek-v4-flash',
+        instructions: options?.systemPrompt,
       });
 
       // 4. Run agent with streaming

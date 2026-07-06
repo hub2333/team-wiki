@@ -1,292 +1,522 @@
 # Team Wiki
 
-Karpathy 的 [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) + Obsidian 双链笔记是优秀的个人知识管理实践，但公开给团队使用并不方便。
+`Team Wiki` 把 Obsidian 风格的 Markdown 知识库，包装成一个可供团队直接使用的知识服务：
 
-本项目解决这个问题：将已生成的 LLM Wiki 文档路径 + DeepSeek key 配置好，完成前后端部署即可获得：
+- `Web UI`：浏览器里直接聊天问答
+- `REST API`：给自研应用或自动化流程调用
+- `MCP Server`：给 Cursor、Claude Desktop 等 Agent 客户端接入
 
-- **Web Chat 页面** — 浏览器直接对话
-- **MCP 协议** — 对接市面成熟 Agent 产品（Claude Desktop、Cursor 等）
-- **REST API** — 自研 Agent 产品集成调用
+项目核心思路是：
 
-## 架构
+1. 用 `KnowledgeGraph` 持续索引 Obsidian 仓库
+2. Agent 直接调用进程内工具，不额外绕 MCP HTTP
+3. 会话层支持两套数据库后端
+   - `SQLite (node:sqlite)`：本地测试、快速试跑、小团队
+   - `PostgreSQL`：50 人以上、长期稳定使用
 
+## 这次调整后的重点
+
+- 去掉了 `better-sqlite3`，改为 Node 内置的 `node:sqlite`
+- 后端支持通过不同配置文件切换 `sqlite / postgres`
+- 补充了建表 SQL：`team-wiki-server/sql/`
+- 根目录启动脚本默认走本地 SQLite
+- Web UI 支持填写 `Bearer Token / JWT`
+- API / MCP 统一走同一套认证逻辑
+- 聊天会话改为真实多轮，上下文会带入历史消息
+
+## 运行要求
+
+- Node.js `22.5+`
+- 推荐直接使用 Node `24 LTS`
+- `Node 20` 不支持当前这套 `node:sqlite` 方案
+- 一个 Obsidian/Markdown 知识库目录
+- 一个兼容 OpenAI 接口的模型 Key（默认示例用 DeepSeek）
+
+先确认版本：
+
+```bash
+node -v
 ```
-┌───────────────────────────────────────────────────┐
-│             Obsidian Markdown 知识库              │
-│  (wikilinks / tags / frontmatter)                 │
-└─────────────────────────┬─────────────────────────┘
-                          │ chokidar watch           
-                          ▼                          
-┌───────────────────────────────────────────────────┐
-│               KnowledgeGraph (索引)               │
-│  resolvedLinks / tagIndex / MiniSearch            │
-│                 增量更新 (2s 防抖)                │
-└─────┬───────────────────┬───────────────────┬─────┘
-      │                   │                   │      
- ┌─────────┐         ┌────▼────┐         ┌─────────┐ 
- │   MCP   │         │  Agent  │         │  REST   │ 
- │  协议   │         │  Chat   │         │   API   │ 
- │ 外部AI  │         │13 Tools │         │  自研   │ 
- └─────────┘         └────┬────┘         └─────────┘ 
-                          │ SSE                      
-                    ┌────▼──────┐                    
-                    │  Web UI  │                     
-                    │ Vue+El+  │                     
-                    └──────────┘                     
-```
 
-**关键变更**：Agent 内部使用**直接函数工具**调用知识图谱，不走 MCP HTTP 层（避免延迟和会话管理问题）。MCP 服务器保留给外部工具使用（Claude Desktop、Cursor 等）。
+## 项目结构
 
-## 目录结构
-
-```
-teamwiki/
-├── team-wiki-server/               # 后端 (Node.js + TypeScript)
+```text
+team-wiki/
+├── README.md
+├── doc/
+│   ├── README.md
+│   ├── rest-api.md
+│   └── mcp.md
+├── scripts/
+│   ├── build.sh
+│   ├── dev.sh
+│   ├── start.sh
+│   ├── start-server.sh
+│   ├── start-ui.sh
+│   ├── build.ps1
+│   ├── dev.ps1
+│   ├── start.ps1
+│   ├── start-server.ps1
+│   └── start-ui.ps1
+├── team-wiki-server/
+│   ├── package.json
+│   ├── .env.example
+│   ├── .env.sqlite.example
+│   ├── .env.postgres.example
+│   ├── sql/
+│   │   ├── schema.sqlite.sql
+│   │   └── schema.postgres.sql
 │   ├── src/
-│   │   ├── app.ts                   Express 入口 + 启动流程
-│   │   ├── config.ts                .env 配置加载
-│   │   ├── cli.ts                   CLI 入口
-│   │   ├── agent/
-│   │   │   ├── index.ts             Agent 工厂 (13 个直接函数工具)
-│   │   │   ├── tools.ts             直接函数工具定义
-│   │   │   └── prompts.ts           系统提示词
-│   │   ├── chat/
-│   │   │   └── index.ts             POST /api/chat SSE 流式接口
-│   │   ├── graph/
-│   │   │   ├── index.ts             知识图谱 (MetadataCache 实现)
-│   │   │   ├── search.ts            MiniSearch 全文搜索
-│   │   │   └── resolver.ts          Wikilink 解析器
-│   │   ├── mcp/
-│   │   │   └── index.ts             MCP 服务器 (Streamable HTTP + SSE)
-│   │   ├── parser/
-│   │   │   └── index.ts             Markdown 解析 (frontmatter/wikilinks/tags)
-│   │   ├── db/
-│   │   │   ├── index.ts             SQLite 初始化
-│   │   │   └── sessions.ts          会话 CRUD
+│   │   ├── app.ts
+│   │   ├── cli.ts
+│   │   ├── config.ts
 │   │   ├── auth/
-│   │   │   └── index.ts             认证中间件 (Bearer / JWT)
-│   │   ├── watcher/
-│   │   │   └── index.ts             文件监听 (chokidar + 增量更新)
-│   │   └── utils/
-│   │       └── logger.ts            结构化日志工具
-│   ├── .env.example                 配置模板
-│   ├── test-vault/                  测试知识库 (5 篇示例 Markdown)
-│   └── package.json
-│
-├── team-wiki-vue-ui/               # 前端 (Vue 3 + Vite + Element Plus)
-│   ├── src/
-│   │   ├── views/
-│   │   │   └── ChatView.vue         聊天页面 (会话管理 / SSE / Markdown 渲染)
-│   │   ├── App.vue                  根组件
-│   │   └── main.js                  Vue 入口 + Element Plus 注册
-│   ├── vite.config.js               Vite 配置 (/api 代理到 :3100)
-│   ├── index.html
-│   └── package.json
-│
-└── scripts/                        # 便捷脚本
-    ├── dev.sh                       开发模式 (端口检测 + 自动启动)
-    ├── start.sh                     生产模式
-    ├── build.sh                     构建前后端
-    ├── start-server.sh              仅启动后端
-    └── start-ui.sh                  仅启动前端
+│   │   ├── agent/
+│   │   ├── chat/
+│   │   ├── db/
+│   │   ├── graph/
+│   │   ├── mcp/
+│   │   ├── parser/
+│   │   ├── utils/
+│   │   └── watcher/
+│   └── test-vault/
+└── team-wiki-vue-ui/
+    ├── package.json
+    ├── vite.config.js
+    └── src/
 ```
 
-## 快速启动
+## 架构概览
 
-### 前置要求
+```text
+Obsidian Vault
+   -> watcher(chokidar)
+   -> KnowledgeGraph
+   -> Agent tools / REST API / MCP Server
+   -> Web UI (SSE chat)
+```
 
-- Node.js 20+
-- DeepSeek 或 OpenAI API Key
-- Markdown 格式的 Obsidian 知识库
+关键点：
 
-### 1. 克隆
+- 索引支持 `wikilinks / tags / frontmatter`
+- 文件变更走增量更新
+- Chat 返回 `SSE`
+- Agent 工具直接调用知识图谱
+- 会话存储可切换 `SQLite` 或 `PostgreSQL`
+
+## 快速开始
+
+### 1. 安装依赖
 
 ```bash
-git clone git@github.com:hub2333/teamwiki.git
-cd teamwiki
+cd team-wiki/team-wiki-server
+npm install
+
+cd ../team-wiki-vue-ui
+npm install
 ```
 
-### 2. 安装依赖
+### 2. 选择数据库配置
+
+#### 方案 A：SQLite
+
+适合：
+
+- 本地开发
+- 快速验证
+- 很小团队
+- 单机部署
+
+复制配置模板：
+
+```powershell
+cd team-wiki\team-wiki-server
+Copy-Item .env.sqlite.example .env.sqlite
+```
+
+或：
 
 ```bash
-cd team-wiki-server && npm install && cd ..
-cd team-wiki-vue-ui && npm install && cd ..
+cd team-wiki/team-wiki-server
+cp .env.sqlite.example .env.sqlite
 ```
 
-### 3. 配置
-
-```bash
-cd team-wiki-server
-cp .env.example .env
-```
-
-编辑 `.env`，必须配置：
+至少修改这几个值：
 
 ```ini
-VAULT_PATH=/path/to/your/obsidian-vault
-AI_API_KEY=sk-your-deepseek-key
+VAULT_PATH=D:\path\to\obsidian
+AI_API_KEY=sk-your-key
+DB_PROVIDER=sqlite
+DB_PATH=./data/chat.sqlite
 ```
 
-启动时自动通过 dotenv 加载 `.env`，无需手动 export。
+默认本地库文件会落在：
 
-### 4. 启动
+```text
+team-wiki-server/data/chat.sqlite
+```
 
-**开发模式（热重载，推荐）：**
+#### 方案 B：PostgreSQL
+
+适合：
+
+- 50 人以上团队日常使用
+- 需要更稳定的并发与备份能力
+- 计划长期作为团队共享知识服务
+
+复制配置模板：
+
+```powershell
+cd team-wiki\team-wiki-server
+Copy-Item .env.postgres.example .env.postgres
+```
+
+或：
 
 ```bash
+cd team-wiki/team-wiki-server
+cp .env.postgres.example .env.postgres
+```
+
+至少修改这几个值：
+
+```ini
+VAULT_PATH=D:\path\to\obsidian
+AI_API_KEY=sk-your-key
+DB_PROVIDER=postgres
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/teamwiki
+```
+
+## 启动方式
+
+### 方式 1：直接用后端 npm 脚本
+
+#### SQLite
+
+PowerShell:
+
+```powershell
+cd team-wiki\team-wiki-server
+$env:ENV_FILE = ".env.sqlite"
+npm run dev
+```
+
+```powershell
+cd team-wiki\team-wiki-server
+$env:ENV_FILE = ".env.sqlite"
+npm run start
+```
+
+Bash:
+
+```bash
+cd team-wiki/team-wiki-server
+ENV_FILE=.env.sqlite npm run dev
+```
+
+```bash
+cd team-wiki/team-wiki-server
+ENV_FILE=.env.sqlite npm run start
+```
+
+#### PostgreSQL
+
+PowerShell:
+
+```powershell
+cd team-wiki\team-wiki-server
+$env:ENV_FILE = ".env.postgres"
+npm run dev
+```
+
+Bash:
+
+```bash
+cd team-wiki/team-wiki-server
+ENV_FILE=.env.postgres npm run dev
+```
+
+也可以继续使用显式脚本：
+
+```bash
+npm run dev:sqlite
+npm run dev:postgres
+npm run start:sqlite
+npm run start:postgres
+```
+
+### 方式 2：使用根目录快捷脚本
+
+默认使用 `.env.sqlite`。
+
+#### Windows PowerShell
+
+```powershell
+cd team-wiki
+.\scripts\dev.ps1
+.\scripts\start.ps1
+.\scripts\start-server.ps1
+.\scripts\start-ui.ps1
+```
+
+切换 PostgreSQL：
+
+```powershell
+$env:ENV_FILE_NAME = ".env.postgres"
+.\scripts\dev.ps1
+```
+
+#### Bash
+
+```bash
+cd team-wiki
 bash scripts/dev.sh
+bash scripts/start.sh
+bash scripts/start-server.sh
+bash scripts/start-ui.sh
 ```
 
-自动检测端口 → 清理旧进程 → 并行启动 server (tsx watch) + UI (Vite HMR)。
-
-**手动分步启动：**
+切换 PostgreSQL：
 
 ```bash
-# 终端 1 — 后端
-cd team-wiki-server && npm start
-
-# 终端 2 — 前端
-cd team-wiki-vue-ui && npm run dev
+cd team-wiki
+ENV_FILE_NAME=.env.postgres bash scripts/dev.sh
 ```
 
-### 5. 访问
+### 方式 3：前后端分开启动
+
+后端：
+
+```powershell
+cd team-wiki\team-wiki-server
+$env:ENV_FILE = ".env.sqlite"
+npm run dev
+```
+
+前端：
+
+```powershell
+cd team-wiki\team-wiki-vue-ui
+npm run dev
+```
+
+## 访问地址
+
+默认端口：
 
 | 服务 | 地址 |
 |------|------|
-| Web UI | http://localhost:3101 |
-| Chat API | POST http://localhost:3100/api/chat |
-| MCP | http://localhost:3100/mcp |
-| Health | http://localhost:3100/health |
+| Web UI | `http://localhost:3101` |
+| Chat API | `POST http://localhost:3100/api/chat` |
+| Session API | `http://localhost:3100/api/sessions` |
+| MCP | `http://localhost:3100/mcp` |
+| Legacy SSE MCP | `http://localhost:3100/sse` |
+| Health | `http://localhost:3100/health` |
 
-## Web UI 功能
+## 数据库切换策略
 
-访问 http://localhost:3101 使用浏览器对话：
+### 推荐选择
 
-- **会话管理** — 新建/切换/删除/批量管理会话
-- **流式对话** — SSE 实时展示 AI 思考过程、工具调用（含耗时）、文本输出
-- **Markdown 渲染** — 代码高亮 (highlight.js)、表格、图片等
-- **用量统计** — 每次回复显示总耗时和 Token 估算
-
-## SSE 协议
-
-`POST /api/chat` 返回 SSE 流，每次事件以 `\n\n` 分隔：
-
-| 事件 | 数据 | 说明 |
-|------|------|------|
-| `text` | `{ content }` | AI 文本片段 delta |
-| `thought` | `{ content }` | 推理过程 |
-| `tool_start` | `{ tool, args, index }` | 工具调用开始 |
-| `tool_end` | `{ tool, result, durationMs }` | 工具调用完成（含耗时） |
-| `done` | `{ sessionId, usage }` | 结束，含耗时和 Token 估算 |
-| `error` | `{ message }` | 错误 |
-
-## Agent 工具
-
-Agent 内置 13 个直接函数工具，进程内调用知识图谱：
-
-| 工具 | 说明 |
+| 场景 | 推荐 |
 |------|------|
-| `search` | 全文搜索 |
-| `search_by_tags` | 标签搜索 |
-| `read_note` | 读取笔记 |
-| `get_forwardlinks` | 出站链接 |
-| `get_backlinks` | 入站反链 |
-| `get_neighbors` | 全连接 |
-| `traverse_graph` | BFS 图谱遍历 |
-| `shortest_path` | 最短路径 |
-| `get_graph_stats` | 图谱统计 |
-| `list_notes` | 列出笔记 |
-| `get_tags` | 标签列表 |
-| `get_tag_hierarchy` | 标签层级树 |
-| `get_index_status` | 索引状态 |
+| 本地测试 / POC / 少量用户 | `SQLite` |
+| 小团队临时共享 | `SQLite` |
+| 50+ 人日常使用 | `PostgreSQL` |
+| 需要标准备份、连接池、独立运维 | `PostgreSQL` |
 
-## MCP 协议（外部集成）
+### 当前实现说明
 
-此服务可作为 MCP Server 接入 Claude Desktop、Cursor 等 AI 工具：
+- `SQLite` 使用 `node:sqlite`
+- `PostgreSQL` 使用 `pg`
+- 两者共用同一套会话抽象：`team-wiki-server/src/db/`
+- 配置切换主要靠 `ENV_FILE`
+
+## 配置文件说明
+
+后端支持三种方式选择配置文件：
+
+1. 默认读取 `.env`
+2. 设置环境变量 `ENV_FILE`
+3. 启动参数传入 `--env-file`
+
+例如：
+
+```bash
+ENV_FILE=.env.sqlite npm run dev
+```
+
+```bash
+npm run dev -- --env-file .env.postgres
+```
+
+### 常用配置项
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `VAULT_PATH` | Obsidian 知识库路径 | `./vault` |
+| `PORT` | 后端端口 | `3100` |
+| `AI_API_KEY` | 模型服务 Key | - |
+| `AI_BASE_URL` | 模型服务地址 | `https://api.deepseek.com/v1` |
+| `AI_MODEL` | 模型名 | `deepseek-v4-flash` |
+| `AUTH_TOKEN` | Bearer Token | 空 |
+| `JWT_SECRET` | JWT 密钥 | 空 |
+| `DB_PROVIDER` | `sqlite` 或 `postgres` | `sqlite` |
+| `DB_PATH` | SQLite 文件路径 | `./data/chat.sqlite` |
+| `DATABASE_URL` | PostgreSQL 连接串 | 空 |
+| `DB_SSL` | PostgreSQL 是否启用 SSL | `false` |
+| `DB_POOL_MAX` | PostgreSQL 连接池大小 | `20` |
+| `MCP_ENABLED` | 是否启用 MCP | `true` |
+| `WATCH_DEBOUNCE_MS` | 文件监听防抖 | `2000` |
+| `INDEX_CONCURRENCY` | 索引并发度 | `10` |
+| `CORS_ORIGINS` | 允许跨域来源 | `http://localhost:3101` |
+
+## 建表 SQL
+
+项目里已经补了两份 SQL：
+
+- [schema.sqlite.sql](./team-wiki-server/sql/schema.sqlite.sql)
+- [schema.postgres.sql](./team-wiki-server/sql/schema.postgres.sql)
+
+接入文档见：
+
+- [REST API 接入](./doc/rest-api.md)
+- [MCP 接入](./doc/mcp.md)
+
+说明：
+
+- 服务启动时会自动初始化缺失表
+- SQL 文件主要用于手工初始化、DBA 审阅、或外部迁移接入
+
+手工执行 PostgreSQL 初始化示例：
+
+```bash
+psql "$DATABASE_URL" -f team-wiki-server/sql/schema.postgres.sql
+```
+
+## Web UI
+
+`team-wiki-vue-ui` 当前主要提供：
+
+- 会话列表
+- 新建 / 切换 / 删除会话
+- SSE 流式对话
+- 工具调用过程展示
+- Markdown 渲染
+- 侧边栏填写 `Bearer Token / JWT`
+
+如果配置了认证：
+
+- API 和 MCP 走同一套认证校验
+- 会话列表和消息读取会按当前用户隔离
+
+## Chat API
+
+`POST /api/chat` 返回 `SSE` 流。
+
+主要事件：
+
+| 事件 | 说明 |
+|------|------|
+| `text` | 文本增量输出 |
+| `thought` | 推理过程片段 |
+| `tool_start` | 工具开始调用 |
+| `tool_end` | 工具调用完成 |
+| `done` | 本轮结束，带 usage |
+| `error` | 异常信息 |
+
+## MCP 接入
+
+当前同时支持两套 MCP 方式：
+
+- 现代模式：`/mcp`
+- 兼容旧客户端：`/sse` + `/messages`
+
+更推荐优先接 `/mcp`。
+
+示例：
 
 ```json
 {
   "mcpServers": {
     "teamwiki": {
-      "url": "http://your-server:3100/sse"
+      "url": "http://localhost:3100/mcp"
     }
   }
 }
 ```
 
-支持两种传输协议：
+## Agent 工具
 
-- **Streamable HTTP** (`POST/DELETE /mcp`) — 现代协议
-- **SSE** (`GET /sse` + `POST /messages`) — 传统协议
+当前内置 13 个知识工具：
 
-通过 `MCP_ENABLED=false` 可禁用 MCP 服务。
+- `search`
+- `search_by_tags`
+- `read_note`
+- `get_forwardlinks`
+- `get_backlinks`
+- `get_neighbors`
+- `traverse_graph`
+- `shortest_path`
+- `get_graph_stats`
+- `list_notes`
+- `get_tags`
+- `get_tag_hierarchy`
+- `get_index_status`
 
-## REST API
+## 技术栈
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/sessions` | 会话列表 |
-| GET | `/api/sessions/:id` | 会话消息 |
-| DELETE | `/api/sessions/:id` | 删除会话 |
-| POST | `/api/chat` | 流式聊天 |
-| GET | `/health` | 健康检查 |
-
-## 配置
-
-所有配置通过 `.env` 文件设置：
-
-### 必填
-
-| 变量 | 说明 |
+| 模块 | 技术 |
 |------|------|
-| `VAULT_PATH` | Obsidian 知识库目录路径 |
-| `AI_API_KEY` | DeepSeek（默认）/ OpenAI API Key |
-
-### 可选
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `PORT` | `3100` | 服务端口 |
-| `AI_BASE_URL` | `https://api.deepseek.com/v1` | API 地址 |
-| `AI_MODEL` | `deepseek-v4-flash` | 模型名称 |
-| `AUTH_TOKEN` | 空（无认证） | Bearer Token |
-| `JWT_SECRET` | 空（无认证） | JWT 密钥 |
-| `MCP_ENABLED` | `true` | 启用 MCP 协议 |
-| `DB_PATH` | `./data/chat.db` | SQLite 路径 |
-| `WATCH_DEBOUNCE_MS` | `2000` | 文件监听防抖 (ms) |
-| `INDEX_CONCURRENCY` | `10` | 索引并发数 |
-| `LOG_LEVEL` | `info` | 日志级别 (debug/info/warn/error) |
-
-## 核心技术
-
-| 组件 | 技术 |
-|------|------|
-| 运行时 | Node.js + TypeScript (ES2022) |
+| 后端 | Node.js + TypeScript + Express |
 | 前端 | Vue 3 + Vite + Element Plus |
-| AI Agent | `@openai/agents` + DeepSeek |
-| MCP 协议 | `@modelcontextprotocol/sdk` |
-| 全文搜索 | MiniSearch |
-| 会话存储 | SQLite (better-sqlite3) |
-| 文件监听 | chokidar (增量更新) |
-| Markdown 解析 | remark + gray-matter |
-| 配置加载 | dotenv |
-| 数据校验 | zod |
+| Agent | `@openai/agents` |
+| MCP | `@modelcontextprotocol/sdk` |
+| 全文搜索 | `MiniSearch` |
+| Markdown 解析 | `remark` + `gray-matter` |
+| 文件监听 | `chokidar` |
+| 配置加载 | `dotenv` |
+| 数据校验 | `zod` |
 
-## 日志
+## 常见建议
 
-使用结构化日志，格式：
+### 1. 本地试跑优先用 SQLite
 
+这是当前默认路径，依赖最少，也最符合现在这套 README 和脚本设计。
+
+### 2. 团队人数上来后切 PostgreSQL
+
+当你开始关心并发、备份、独立数据库运维，直接切到 `.env.postgres` 更稳。
+
+### 3. Windows 下如果刚升级 Node
+
+如果 `node -v` 还显示旧版本，通常是终端还没刷新环境变量。重开终端后再执行一次。
+
+## 构建
+
+后端构建：
+
+```bash
+cd team-wiki/team-wiki-server
+npm run build
 ```
-HH:mm:ss.SSS [LEVEL] [模块] 消息
+
+前端构建：
+
+```bash
+cd team-wiki/team-wiki-vue-ui
+npm run build
 ```
 
-运行时日志示例：
+根目录快捷构建：
 
-```
-06:59:20.338 [INFO] [App] start {"vault":"/mnt/e/wsl/my_project/obsidian","port":3100}
-06:59:25.016 [INFO] [App] index_done {"files":581,"elapsedMs":4655}
-06:55:10.044 [INFO] [Chat] Start userId=anonymous msg="介绍项目架构"
-06:55:22.481 [INFO] [Chat] Done session=xxx elapsed=12437ms tokens=3551
+```bash
+cd team-wiki
+bash scripts/build.sh
 ```
 
-通过 `LOG_LEVEL` 控制输出级别。
+或：
+
+```powershell
+cd team-wiki
+.\scripts\build.ps1
+```

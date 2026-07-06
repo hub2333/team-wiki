@@ -18,7 +18,8 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { type KnowledgeGraph } from '../graph/index.js';
-import type { ServerConfig } from '../types.js';
+import type { AppConfig } from '../config.js';
+import { createAuthMiddleware } from '../auth/index.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('MCP');
@@ -28,9 +29,9 @@ export class McpService {
   /** All transports indexed by sessionId */
   private transports: Record<string, SSEServerTransport | StreamableHTTPServerTransport> = {};
   private graph: KnowledgeGraph;
-  private config: ServerConfig;
+  private config: AppConfig;
 
-  constructor(graph: KnowledgeGraph, config: ServerConfig) {
+  constructor(graph: KnowledgeGraph, config: AppConfig) {
     this.graph = graph;
     this.config = config;
     this.mcpRouter = Router();
@@ -131,15 +132,10 @@ export class McpService {
     // ─── CORS is handled at app level in app.ts ──────────────
 
     // ─── Auth ──────────────────────────────────────────────
-    this.mcpRouter.use((req, res, next) => {
-      if (this.config.authToken && req.path !== '/health') {
-        const auth = req.headers.authorization;
-        if (!auth || auth !== `Bearer ${this.config.authToken}`) {
-          res.status(401).json({ error: 'Unauthorized' }); return;
-        }
-      }
-      next();
-    });
+    this.mcpRouter.use(createAuthMiddleware({
+      bearerToken: this.config.authToken,
+      jwtSecret: this.config.jwtSecret,
+    }));
 
     // ─── Health ────────────────────────────────────────────
     this.mcpRouter.get('/health', (_req, res) => {

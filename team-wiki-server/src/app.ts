@@ -19,7 +19,7 @@ import { KnowledgeGraph } from './graph/index.js';
 import { McpService } from './mcp/index.js';
 import { VaultWatcher } from './watcher/index.js';
 import { loadConfig, type AppConfig } from './config.js';
-import { initDb } from './db/index.js';
+import { closeDb, initDb } from './db/index.js';
 import { createAuthMiddleware } from './auth/index.js';
 import { createChatRouter } from './chat/index.js';
 import { createLogger } from './utils/logger.js';
@@ -56,10 +56,24 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
     process.env.OPENAI_BASE_URL = config.aiBaseUrl;
   }
 
-  log.info('start', { vault: config.vaultPath, port: config.port, auth: !!config.authToken, db: config.dbPath, ai: `${config.aiBaseUrl} / ${config.aiModel}` });
+  log.info('start', {
+    vault: config.vaultPath,
+    port: config.port,
+    auth: !!config.authToken,
+    dbProvider: config.dbProvider,
+    db: config.dbProvider === 'postgres' ? config.dbUrl : config.dbPath,
+    ai: `${config.aiBaseUrl} / ${config.aiModel}`,
+    envFile: config.envFile,
+  });
 
   // 1. Init database
-  initDb({ path: config.dbPath });
+  await initDb({
+    provider: config.dbProvider,
+    path: config.dbPath,
+    url: config.dbUrl,
+    ssl: config.dbSsl,
+    poolMax: config.dbPoolMax,
+  });
   log.info('db_ready');
 
   // 2. Create Express app
@@ -67,9 +81,18 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
 
   // Manual CORS middleware — runs before everything else
   app.use((req, res, next) => {
-    const origin = req.headers.origin || '*';
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    const requestOrigin = req.headers.origin;
+    const allowAnyOrigin = config.corsOrigins.includes('*');
+    const isAllowedOrigin = requestOrigin ? config.corsOrigins.includes(requestOrigin) : false;
+
+    if (allowAnyOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (requestOrigin && isAllowedOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, MCP-Session-Id, Accept, Origin, X-Requested-With');
     res.setHeader('Access-Control-Max-Age', '86400');
@@ -145,6 +168,7 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
     await new Promise<void>(resolve => httpServer.close(() => resolve()));
     if (mcp) await mcp.stop();
     await watcher.stop();
+    await closeDb();
     console.log('Shutdown complete');
   };
 

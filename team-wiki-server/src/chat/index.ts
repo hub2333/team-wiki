@@ -11,7 +11,7 @@
  */
 
 import { Router, type Request, type Response } from 'express';
-import { run } from '@openai/agents';
+import { run, type AgentInputItem } from '@openai/agents';
 import type { KnowledgeGraph } from '../graph/index.js';
 import { createKnowledgeAgent } from '../agent/index.js';
 import * as sessions from '../db/sessions.js';
@@ -42,6 +42,13 @@ export function createChatRouter(
       return;
     }
 
+    const trimmedMessage = message.trim();
+    let session = existingSessionId ? await sessions.getSession(String(existingSessionId)) : null;
+    if (existingSessionId && (!session || session.userId !== userId)) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -61,22 +68,23 @@ export function createChatRouter(
     const startTime = Date.now();
     let sessionId: string | null = null;
     try {
-      log.info(`Start`, `userId=${userId} msg="${message.trim().slice(0, 50)}"`);
+      log.info(`Start`, `userId=${userId} msg="${trimmedMessage.slice(0, 50)}"`);
 
       // 1. Get or create session
       sessionId = existingSessionId ?? null;
-      let session = sessionId ? sessions.getSession(sessionId) : null;
-
       if (!session) {
-        session = sessions.createSession(userId);
+        session = await sessions.createSession(userId);
         sessionId = session.id;
       }
 
+      const priorMessages = (await sessions.getMessages(sessionId!, 50))
+        .filter(msg => msg.role === 'user' || msg.role === 'assistant');
+
       // 2. Save user message
-      sessions.addMessage({
+      await sessions.addMessage({
         sessionId: sessionId!,
         role: 'user',
-        content: message.trim(),
+        content: trimmedMessage,
       });
 
       // 3. Create agent with direct KnowledgeGraph tools
@@ -85,14 +93,14 @@ export function createChatRouter(
       });
 
       // 4. Run agent with streaming
-      const mcpResult = await run(agent, message.trim(), {
+      const mcpResult = await run(agent, buildRunInput(priorMessages, trimmedMessage), {
         stream: true,
       } as any);
 
       // Collect tool calls and final text
-      const toolCalls: Array<{ name: string; args: any; result: any; durationMs: number }> = [];
+      const toolCalls: Array<{ tool: string; args: any; result: any; durationMs: number }> = [];
       let fullText = '';
-      const toolStartTimes = new Map<string, number>();
+      const pendingToolCalls: Array<{ tool: string; args: any; startedAt: number }> = [];
       let toolCallIdx = 0;
 
       // 5. Iterate through the stream
@@ -121,7 +129,11 @@ export function createChatRouter(
             const toolName: string = rawItem.name || 'unknown';
             const args = rawItem.arguments || rawItem.input || {};
             const idx = toolCallIdx++;
-            toolStartTimes.set(toolName + ':' + idx, Date.now());
+            pendingToolCalls.push({
+              tool: toolName,
+              args,
+              startedAt: Date.now(),
+            });
             sse('tool_start', {
               tool: toolName,
               args: truncateValue(args),
@@ -134,21 +146,18 @@ export function createChatRouter(
               ? output
               : JSON.stringify(output);
 
-            // Compute elapsed time
-            let durationMs = 0;
-            // Match by position among pending tool calls of the same name
-            const sameCalls = [...toolStartTimes.entries()]
-              .filter(([k]) => k.startsWith(toolName + ':'))
-              .sort();
-            for (const [key, start] of sameCalls) {
-              if (!toolCalls.some(tc => tc.name === toolName && tc.durationMs === 0)) {
-                toolStartTimes.delete(key);
-                durationMs = Date.now() - start;
-                break;
-              }
-            }
+            const pendingIdx = pendingToolCalls.findIndex(tc => tc.tool === toolName);
+            const pending = pendingIdx >= 0
+              ? pendingToolCalls.splice(pendingIdx, 1)[0]
+              : { tool: toolName, args: {}, startedAt: Date.now() };
+            const durationMs = Math.max(0, Date.now() - pending.startedAt);
 
-            toolCalls.push({ name: toolName, args: {}, result: resultStr, durationMs });
+            toolCalls.push({
+              tool: toolName,
+              args: pending.args,
+              result: resultStr,
+              durationMs,
+            });
             sse('tool_end', {
               tool: toolName,
               result: truncateString(resultStr, 300),
@@ -169,9 +178,10 @@ export function createChatRouter(
 
       // 6. Compute usage stats
       const elapsedMs = Date.now() - startTime;
-      const inputChars = message.trim().length;
+      const inputChars = trimmedMessage.length;
       const outputChars = fullText.length;
-      const totalInputChars = inputChars + (toolCalls.reduce((s, tc) => s + JSON.stringify(tc.args).length + (tc.result?.length || 0), 0));
+      const historyChars = priorMessages.reduce((sum, msg) => sum + msg.content.length, 0);
+      const totalInputChars = historyChars + inputChars + toolCalls.reduce((s, tc) => s + JSON.stringify(tc.args).length + (tc.result?.length || 0), 0);
       const usage = {
         elapsedMs,
         inputChars,
@@ -184,24 +194,36 @@ export function createChatRouter(
       log.info(`Done`, `session=${sessionId} elapsed=${elapsedMs}ms tokens=${usage.estimatedTotalTokens}`);
 
       // 7. Save assistant message
-      sessions.addMessage({
+      await sessions.addMessage({
         sessionId: sessionId!,
         role: 'assistant',
         content: fullText,
-        toolCalls: toolCalls.length > 0 ? JSON.stringify(toolCalls.map(({ name, args, result, durationMs }) => ({ name, args, result: truncateString(result, 500), durationMs }))) : undefined,
+        toolCalls: toolCalls.length > 0
+          ? JSON.stringify(toolCalls.map(({ tool, args, result, durationMs }) => ({
+              tool,
+              args,
+              result: truncateString(result, 500),
+              durationMs,
+            })))
+          : undefined,
       });
 
       // 8. Auto-title: use first message to set session title
-      const history = sessions.getMessages(sessionId!);
+      const history = await sessions.getMessages(sessionId!);
       if (history.length <= 2) {
-        const title = message.trim().slice(0, 50) + (message.length > 50 ? '...' : '');
-        sessions.updateSessionTitle(sessionId!, title);
+        const title = trimmedMessage.slice(0, 50) + (trimmedMessage.length > 50 ? '...' : '');
+        await sessions.updateSessionTitle(sessionId!, title);
       }
 
       // 9. Send done event with usage
       sse('done', {
         sessionId: sessionId!,
-        toolCalls: toolCalls.map(({ name, result, durationMs }) => ({ name, result: truncateString(result, 500), durationMs })),
+        toolCalls: toolCalls.map(({ tool, args, result, durationMs }) => ({
+          tool,
+          args,
+          result: truncateString(result, 500),
+          durationMs,
+        })),
         usage,
       });
 
@@ -221,29 +243,37 @@ export function createChatRouter(
 
   // ─── GET /api/sessions — List user sessions ─────────────
 
-  router.get('/sessions', (_req: Request, res: Response) => {
+  router.get('/sessions', async (_req: Request, res: Response) => {
     const userId = (_req as any).userId || 'anonymous';
-    const list = sessions.listSessions(userId);
+    const list = await sessions.listSessions(userId);
     res.json({ sessions: list });
   });
 
   // ─── GET /api/sessions/:id — Get session messages ──────
 
-  router.get('/sessions/:id', (req: Request, res: Response) => {
+  router.get('/sessions/:id', async (req: Request, res: Response) => {
+    const userId = (req as any).userId || 'anonymous';
     const sid = String(req.params.id);
-    const session = sessions.getSession(sid);
-    if (!session) {
+    const session = await sessions.getSession(sid);
+    if (!session || session.userId !== userId) {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    const msgs = sessions.getMessages(sid);
+    const msgs = await sessions.getMessages(sid);
     res.json({ session, messages: msgs });
   });
 
   // ─── DELETE /api/sessions/:id — Delete session ─────────
 
-  router.delete('/sessions/:id', (req: Request, res: Response) => {
-    sessions.deleteSession(String(req.params.id));
+  router.delete('/sessions/:id', async (req: Request, res: Response) => {
+    const userId = (req as any).userId || 'anonymous';
+    const sid = String(req.params.id);
+    const session = await sessions.getSession(sid);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+    await sessions.deleteSession(sid);
     res.json({ ok: true });
   });
 
@@ -264,4 +294,34 @@ function truncateValue(val: unknown): unknown {
 function truncateString(str: string, maxLen: number): string {
   if (str.length <= maxLen) return str;
   return str.slice(0, maxLen) + '...';
+}
+
+function buildRunInput(
+  history: sessions.Message[],
+  message: string
+): AgentInputItem[] {
+  const boundedHistory = history.slice(-24);
+  const items: AgentInputItem[] = [];
+
+  for (const msg of boundedHistory) {
+    if (msg.role === 'assistant') {
+      items.push({
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: msg.content }],
+      } as AgentInputItem);
+    } else {
+      items.push({
+        role: 'user',
+        content: msg.content,
+      } as AgentInputItem);
+    }
+  }
+
+  items.push({
+    role: 'user',
+    content: message,
+  } as AgentInputItem);
+
+  return items;
 }

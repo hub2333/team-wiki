@@ -8,6 +8,8 @@
  *   VAULT_PATH=./test-vault npm start   # Custom vault path
  *   VAULT_PATH=./test-vault PORT=3100 AUTH_TOKEN=secret npm start
  *   OPENAI_API_KEY=sk-xxx npm start     # Enable agent chat
+ *   ENV_FILE=.env.sqlite npm run dev    # Use sqlite profile
+ *   ENV_FILE=.env.postgres npm start    # Use postgres profile
  */
 
 import { startApp } from './app.js';

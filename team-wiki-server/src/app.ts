@@ -22,9 +22,13 @@ import { loadConfig, type AppConfig } from './config.js';
 import { closeDb, initDb } from './db/index.js';
 import { createAuthMiddleware } from './auth/index.js';
 import { createChatRouter } from './chat/index.js';
-import { resolveKnowledgeAgentPrompt } from './agent/prompts.js';
 import { createLogger } from './utils/logger.js';
 import type { ServerConfig } from './types.js';
+import { bootstrapProductData } from './admin/bootstrap.js';
+import { createProductRouter, createPublicAuthRouter, getJwtSecret } from './admin/routes.js';
+import { VaultGraphManager } from './graph/manager.js';
+import { getDb } from './db/index.js';
+import { DEFAULT_KNOWLEDGE_AGENT_BASE_PROMPT, SYSTEM_PROMPT_SETTING_KEY } from './agent/prompts.js';
 
 const log = createLogger('App');
 
@@ -77,7 +81,20 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
   });
   log.info('db_ready');
 
-  // 2. Create Express app
+  await bootstrapProductData(config);
+
+  // 2. Start all enabled vault graphs before accepting product traffic.
+  const vaultManager = new VaultGraphManager(config);
+  await vaultManager.start(await getDb().listVaults({ enabledOnly: true }));
+  const defaultContext = vaultManager.first();
+  if (!defaultContext) {
+    throw new Error('No enabled knowledge vaults configured.');
+  }
+  const graph = defaultContext.graph;
+  const watcher = defaultContext.watcher;
+  const systemPrompt = defaultContext.systemPrompt;
+
+  // 3. Create Express app
   const app = express();
 
   // Manual CORS middleware — runs before everything else
@@ -106,31 +123,19 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
 
   app.use(express.json({ limit: '10mb' }));
 
+  app.use('/api', createPublicAuthRouter(config));
+
   // 3. Auth middleware (only applies to /api routes)
   const authMiddleware = createAuthMiddleware({
     bearerToken: config.authToken,
-    jwtSecret: config.jwtSecret,
+    jwtSecret: getJwtSecret(config),
   });
   app.use('/api', authMiddleware);
+  app.use('/api', createProductRouter(config, vaultManager));
 
   // 4. Health check is registered in MCP router
   //
 
-  // 5. Create the knowledge graph
-  const graph = new KnowledgeGraph();
-
-  // 6. Start the vault watcher (builds initial index)
-  const watcher = new VaultWatcher(graph, config, {
-    onIndexingStart: () => log.info('index_start'),
-    onIndexingComplete: (elapsed) =>
-      log.info('index_done', { files: graph.nodes.size, elapsedMs: elapsed }),
-    onError: (err) => log.error('watcher_error', { msg: err.message }),
-    onFileChange: (path, action) => log.debug('file_change', { action, path }),
-  });
-
-  await watcher.start();
-
-  const systemPrompt = resolveKnowledgeAgentPrompt(graph, config);
   log.info('agent_prompt_ready', {
     mode: config.agentSystemPromptFile
       ? 'file+dynamic'
@@ -149,13 +154,18 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
   } else {
     // Mount health check directly if MCP is disabled (normally handled by MCP router)
     app.get('/health', (_req, res) => {
-      res.json({ status: 'ok', files: graph.nodes.size });
+      res.json({ status: 'ok', files: graph.nodes.size, vaults: vaultManager.listStatus() });
     });
   }
 
   // 8. Register Chat API routes
   const chatRouter = createChatRouter(graph, config, {
     systemPrompt,
+    getGraphContext: (vaultId) => vaultManager.get(vaultId),
+    getBaseSystemPrompt: async () => {
+      const setting = await getDb().getSetting(SYSTEM_PROMPT_SETTING_KEY);
+      return setting?.value || config.agentSystemPrompt || DEFAULT_KNOWLEDGE_AGENT_BASE_PROMPT;
+    },
   });
   app.use('/api', chatRouter);
 
@@ -180,7 +190,7 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
     console.log('Shutting down...');
     await new Promise<void>(resolve => httpServer.close(() => resolve()));
     if (mcp) await mcp.stop();
-    await watcher.stop();
+    await vaultManager.stop();
     await closeDb();
     console.log('Shutdown complete');
   };

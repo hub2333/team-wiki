@@ -9,9 +9,11 @@
 - `01-purpose.md`：产品目的和定位。
 - `02-requirements.md`：核心需求清单。
 - `03-versions.md`：后续版本记录。
+- `04-design-proposal.md`：现代 AI 知识工作台设计方案。
 
 后续如果有新版本，直接在本目录新增文件，例如：
 
-- `v0.2-admin-console.md`
-- `v0.3-user-chat.md`
+- `v0.3-react-shell.md`
+- `v0.4-user-chat.md`
+- `v0.5-admin-console.md`
 - `v1.0-team-trial.md`

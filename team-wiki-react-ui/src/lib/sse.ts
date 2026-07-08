@@ -9,12 +9,12 @@ export type ChatEvent =
   | { type: 'sub_agent_done'; vaultId: string; vaultName: string; status: ReasoningStatus; summary?: string; durationMs?: number; sources?: ChatSource[] }
   | { type: 'synthesis_start'; vaultCount?: number; vaults?: Array<{ vaultId: string; vaultName: string }> }
   | { type: 'synthesis_done'; durationMs?: number }
-  | { type: 'done'; sessionId?: string; vaultId?: string | null; usage?: unknown; sources?: ChatSource[] }
+  | { type: 'done'; sessionId?: string; vaultId?: string | null; usage?: unknown; sources?: ChatSource[]; model?: { id: string; name: string; model: string; baseUrl: string; hasApiKey: boolean; isDefault: boolean } }
   | { type: 'error'; message: string };
 
 export async function streamChat(
   token: string,
-  payload: { message: string; vaultIds: string[]; sessionId?: string | null },
+  payload: { message: string; vaultIds: string[]; sessionId?: string | null; modelId?: string },
   onEvent: (event: ChatEvent) => void,
 ) {
   const res = await fetch('/api/chat', {
@@ -99,7 +99,7 @@ function normalizeEvent(name: string, data: any): ChatEvent {
   }
   if (name === 'synthesis_start') return { type: 'synthesis_start', vaultCount: data.vaultCount, vaults: data.vaults || [] };
   if (name === 'synthesis_done') return { type: 'synthesis_done', durationMs: data.durationMs };
-  if (name === 'done') return { type: 'done', sessionId: data.sessionId, vaultId: data.vaultId, usage: data.usage, sources: data.sources || [] };
+  if (name === 'done') return { type: 'done', sessionId: data.sessionId, vaultId: data.vaultId, usage: data.usage, sources: data.sources || [], model: data.model };
   if (name === 'error') return { type: 'error', message: data.message || 'Request failed' };
   return { type: 'text', content: '' };
 }

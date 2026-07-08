@@ -20,6 +20,7 @@ import { createLogger } from '../utils/logger.js';
 import { getDb } from '../db/index.js';
 import type { GraphContext } from '../graph/manager.js';
 import { getRequestUserId } from '../auth/index.js';
+import type { ModelConfig } from '../db/types.js';
 import {
   DEFAULT_KNOWLEDGE_AGENT_BASE_PROMPT,
   SYSTEM_PROMPT_SETTING_KEY,
@@ -55,6 +56,16 @@ interface AgentCaptureOptions {
   onToolEnd?: (tool: string, result: string, durationMs: number) => void;
 }
 
+interface RuntimeModel {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  hasApiKey: boolean;
+  isDefault: boolean;
+}
+
 // Rough token estimate: ~2 chars per token for mixed CJK/Latin text
 function estimateTokens(chars: number): number {
   return Math.ceil(chars / 2);
@@ -77,6 +88,7 @@ export function createChatRouter(
     const userId = getRequestUserId(req);
     const { message, sessionId: existingSessionId } = req.body;
     const requestedVaultIds = normalizeVaultIds(req.body?.vaultIds, req.body?.vaultId);
+    const requestedModelId = normalizeOptionalId(req.body?.modelId);
 
     if (!message || typeof message !== 'string' || message.trim().length === 0) {
       res.status(400).json({ error: 'Message is required' });
@@ -114,6 +126,14 @@ export function createChatRouter(
     const persistedVaultIds = activeContexts.map(ctx => ctx.vault.id);
     const activeVaultId = activeContexts.length === 1 ? activeContexts[0].vault.id : null;
     const baseSystemPrompt = await resolveBaseSystemPrompt(config, options);
+    const sessionModelId = normalizeOptionalId(session?.metadata?.modelId);
+    let selectedModel: RuntimeModel;
+    try {
+      selectedModel = await resolveRuntimeModel(config, requestedModelId || sessionModelId);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid model configuration' });
+      return;
+    }
 
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
@@ -141,6 +161,10 @@ export function createChatRouter(
       if (!session) {
         session = await sessions.createSession(userId, undefined, activeVaultId, {
           vaultIds: persistedVaultIds,
+          modelId: selectedModel.id,
+          modelName: selectedModel.name,
+          model: selectedModel.model,
+          modelBaseUrl: selectedModel.baseUrl,
         });
         sessionId = session.id;
       }
@@ -155,10 +179,9 @@ export function createChatRouter(
         content: trimmedMessage,
       });
 
-      const model = await resolveModelName(config);
       const runResult = activeContexts.length === 1
-        ? await runSingleVaultAgent(activeContexts[0], baseSystemPrompt, model, priorMessages, trimmedMessage, sse)
-        : await runParallelVaultAgents(activeContexts, baseSystemPrompt, model, trimmedMessage, sse);
+        ? await runSingleVaultAgent(activeContexts[0], baseSystemPrompt, selectedModel.model, priorMessages, trimmedMessage, sse)
+        : await runParallelVaultAgents(activeContexts, baseSystemPrompt, selectedModel.model, trimmedMessage, sse);
       const fullText = runResult.fullText;
       const toolCalls = runResult.toolCalls;
 
@@ -228,6 +251,7 @@ export function createChatRouter(
         })),
         sources,
         usage,
+        model: publicRuntimeModel(selectedModel),
       });
 
       res.end();
@@ -317,14 +341,61 @@ async function resolveBaseSystemPrompt(
   return setting?.value || config.agentSystemPrompt || options?.systemPrompt || DEFAULT_KNOWLEDGE_AGENT_BASE_PROMPT;
 }
 
-async function resolveModelName(config: AppConfig): Promise<string> {
-  const modelConfig = await getDb().getDefaultModelConfig();
-  if (modelConfig?.enabled) {
-    if (modelConfig.apiKey) process.env.OPENAI_API_KEY = modelConfig.apiKey;
-    if (modelConfig.baseUrl) process.env.OPENAI_BASE_URL = modelConfig.baseUrl;
-    return modelConfig.model;
+async function resolveRuntimeModel(config: AppConfig, requestedModelId?: string): Promise<RuntimeModel> {
+  if (requestedModelId && requestedModelId !== 'environment') {
+    const modelConfig = await getDb().getModelConfig(requestedModelId);
+    if (!modelConfig) throw new Error('Model config not found');
+    if (!modelConfig.enabled) throw new Error('Selected model is disabled');
+    return applyModelEnvironment(toRuntimeModel(modelConfig));
   }
-  return config.aiModel || 'deepseek-v4-flash';
+
+  const defaultConfig = requestedModelId === 'environment' ? null : await getDb().getDefaultModelConfig();
+  if (defaultConfig?.enabled) {
+    return applyModelEnvironment(toRuntimeModel(defaultConfig, true));
+  }
+
+  return applyModelEnvironment({
+    id: 'environment',
+    name: 'Environment default',
+    baseUrl: config.aiBaseUrl,
+    model: config.aiModel || 'deepseek-v4-flash',
+    apiKey: config.aiApiKey,
+    hasApiKey: Boolean(config.aiApiKey),
+    isDefault: true,
+  });
+}
+
+function toRuntimeModel(modelConfig: ModelConfig, isDefault = modelConfig.isDefault): RuntimeModel {
+  return {
+    id: modelConfig.id,
+    name: modelConfig.name,
+    baseUrl: modelConfig.baseUrl,
+    model: modelConfig.model,
+    apiKey: modelConfig.apiKey,
+    hasApiKey: Boolean(modelConfig.apiKey),
+    isDefault,
+  };
+}
+
+function applyModelEnvironment(model: RuntimeModel): RuntimeModel {
+  if (!model.hasApiKey) {
+    throw new Error(`Selected model "${model.name}" is missing an API key`);
+  }
+  if (model.apiKey) process.env.OPENAI_API_KEY = model.apiKey;
+  if (model.baseUrl) process.env.OPENAI_BASE_URL = model.baseUrl;
+  return model;
+}
+
+function publicRuntimeModel(model: RuntimeModel) {
+  return {
+    id: model.id,
+    name: model.name,
+    baseUrl: model.baseUrl,
+    model: model.model,
+    enabled: true,
+    isDefault: model.isDefault,
+    hasApiKey: model.hasApiKey,
+  };
 }
 
 async function runSingleVaultAgent(
@@ -648,6 +719,10 @@ function normalizeVaultIds(rawVaultIds: unknown, legacyVaultId?: unknown): strin
   const legacy = legacyVaultId ? String(legacyVaultId).trim() : '';
   if (legacy) ids.add(legacy);
   return [...ids];
+}
+
+function normalizeOptionalId(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim() : '';
 }
 
 function getSessionVaultIds(session: sessions.Session): string[] {

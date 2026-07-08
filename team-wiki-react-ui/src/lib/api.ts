@@ -118,6 +118,10 @@ export function listAdminModels(token: string) {
   return apiFetch<{ models: ModelConfig[] }>('/api/admin/models', token);
 }
 
+export function listModels(token: string) {
+  return apiFetch<{ models: ModelConfig[] }>('/api/models', token);
+}
+
 export function createModel(token: string, input: {
   name: string;
   baseUrl: string;
@@ -144,7 +148,7 @@ export function deleteModel(token: string, id: string) {
 }
 
 export function testModel(token: string, id: string) {
-  return apiFetch<{ ok: boolean; checks: Record<string, boolean>; message: string }>(`/api/admin/models/${id}/test`, token, { method: 'POST' });
+  return apiFetch<{ ok: boolean; checks: Record<string, boolean>; message: string; latencyMs?: number; status?: number }>(`/api/admin/models/${id}/test`, token, { method: 'POST' });
 }
 
 export function getUsageSummary(token: string) {

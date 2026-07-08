@@ -1,0 +1,176 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "Noto Sans CJK SC",
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  background: #f6f8fb;
+  color: #101828;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+select::-ms-expand {
+  display: none;
+}
+
+.chat-message {
+  font-size: 15.5px;
+  line-height: 1.68;
+  letter-spacing: 0;
+  color: #1f2937;
+}
+
+.chat-message-user {
+  font-size: 15px;
+  line-height: 1.6;
+  letter-spacing: 0;
+}
+
+.chat-composer {
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.chat-prose {
+  overflow-wrap: anywhere;
+}
+
+.chat-prose p {
+  margin: 0.45rem 0;
+  line-height: 1.68;
+}
+
+.chat-prose > :first-child {
+  margin-top: 0;
+}
+
+.chat-prose > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-prose h1,
+.chat-prose h2,
+.chat-prose h3,
+.chat-prose h4 {
+  margin: 1rem 0 0.5rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #0f172a;
+}
+
+.chat-prose h1 {
+  font-size: 1.18rem;
+}
+
+.chat-prose h2 {
+  font-size: 1.08rem;
+}
+
+.chat-prose h3,
+.chat-prose h4 {
+  font-size: 1rem;
+}
+
+.chat-prose ul,
+.chat-prose ol {
+  margin: 0.5rem 0 0.75rem;
+  padding-left: 1.25rem;
+}
+
+.chat-prose li {
+  margin: 0.2rem 0;
+  line-height: 1.65;
+}
+
+.chat-prose blockquote {
+  margin: 0.75rem 0;
+  border-left: 3px solid #0f766e;
+  background: #f0fdfa;
+  padding: 0.5rem 0.75rem;
+  color: #334155;
+}
+
+.chat-prose code {
+  border-radius: 0.25rem;
+  background: #f1f5f9;
+  padding: 0.1rem 0.3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.chat-prose pre {
+  overflow: auto;
+  border-radius: 0.5rem;
+  background: #111827;
+  color: #f9fafb;
+  padding: 0.875rem;
+}
+
+.chat-prose pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.chat-prose table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.9em;
+}
+
+.chat-prose th,
+.chat-prose td {
+  border: 1px solid #e2e8f0;
+  padding: 0.4rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.chat-prose th {
+  background: #f8fafc;
+  font-weight: 700;
+}

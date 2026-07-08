@@ -18,6 +18,16 @@
           </button>
           <span class="manage-tip">已选 {{ selectedIds.size }} 项</span>
         </div>
+        <div class="auth-panel">
+          <input
+            v-model="authTokenInput"
+            class="auth-input"
+            type="password"
+            placeholder="Bearer Token / JWT（可选）"
+          />
+          <button class="auth-btn" @click="applyAuthToken">应用</button>
+          <button class="auth-btn secondary" @click="clearAuthToken">清除</button>
+        </div>
       </div>
 
       <div class="session-list" v-if="sessions.length > 0">
@@ -286,6 +296,7 @@ import {
 
 // API 基础路径（通过 vite proxy 转发到后端）
 const API_BASE = ''
+const AUTH_STORAGE_KEY = 'teamwiki.authToken'
 
 // ── 状态 ──
 const messages = reactive([])
@@ -297,6 +308,11 @@ const currentSessionId = ref(null)
 const streamError = ref('')
 const messagesRef = ref(null)
 const inputRef = ref(null)
+const savedToken = typeof window !== 'undefined'
+  ? (window.localStorage.getItem(AUTH_STORAGE_KEY) || '')
+  : ''
+const authToken = ref(savedToken)
+const authTokenInput = ref(savedToken)
 
 // ── 批量管理模式 ──
 const manageMode = ref(false)
@@ -341,7 +357,7 @@ async function batchDeleteSessions() {
     })
     const ids = [...selectedIds]
     await Promise.all(ids.map(id =>
-      fetch(`${API_BASE}/api/sessions/${id}`, { method: 'DELETE' })
+      apiFetch(`/api/sessions/${id}`, { method: 'DELETE' })
     ))
     sessions.value = sessions.value.filter(s => !selectedIds.has(s.id))
     if (currentSessionId.value && selectedIds.has(currentSessionId.value)) {
@@ -388,9 +404,9 @@ marked.setOptions({
 function renderMarkdown(text) {
   if (!text) return ''
   try {
-    return marked.parse(text)
+    return sanitizeHtml(marked.parse(text))
   } catch (e) {
-    return text
+    return sanitizeHtml(text)
   }
 }
 
@@ -448,10 +464,68 @@ function resetStreamingState() {
   pendingUsage = null
 }
 
+function buildAuthHeaders(extraHeaders = {}) {
+  const headers = { ...extraHeaders }
+  const token = authToken.value.trim()
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
+  return headers
+}
+
+async function apiFetch(path, options = {}) {
+  return fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: buildAuthHeaders(options.headers || {})
+  })
+}
+
+function persistAuthToken(token) {
+  if (typeof window === 'undefined') return
+  if (token) {
+    window.localStorage.setItem(AUTH_STORAGE_KEY, token)
+  } else {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY)
+  }
+}
+
+async function applyAuthToken() {
+  authToken.value = authTokenInput.value.trim()
+  persistAuthToken(authToken.value)
+  exitManageMode()
+  createNewSession()
+  await loadSessions()
+}
+
+async function clearAuthToken() {
+  authTokenInput.value = ''
+  authToken.value = ''
+  persistAuthToken('')
+  exitManageMode()
+  createNewSession()
+  await loadSessions()
+}
+
+function normalizeToolCalls(rawToolCalls) {
+  if (!Array.isArray(rawToolCalls)) return null
+  const normalized = rawToolCalls.map(tc => ({
+    tool: tc.tool || tc.name || 'unknown',
+    args: tc.args && typeof tc.args === 'object' ? tc.args : {},
+    result: typeof tc.result === 'string' ? tc.result : '',
+    durationMs: tc.durationMs || 0
+  }))
+  return normalized.length > 0 ? normalized : null
+}
+
 // ── 会话管理 ──
 async function loadSessions() {
   try {
-    const res = await fetch(`${API_BASE}/api/sessions`)
+    const res = await apiFetch('/api/sessions')
+    if (res.status === 401) {
+      sessions.value = []
+      ElMessage.error('认证失败，请检查 Token / JWT')
+      return
+    }
     if (res.ok) {
       const data = await res.json()
       sessions.value = (data.sessions || []).sort((a, b) => b.updatedAt - a.updatedAt)
@@ -463,7 +537,11 @@ async function loadSessions() {
 
 async function loadSessionMessages(sessionId) {
   try {
-    const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`)
+    const res = await apiFetch(`/api/sessions/${sessionId}`)
+    if (res.status === 401) {
+      ElMessage.error('认证失败，请检查 Token / JWT')
+      return
+    }
     if (res.ok) {
       const data = await res.json()
       messages.splice(0, messages.length)
@@ -472,7 +550,8 @@ async function loadSessionMessages(sessionId) {
           let toolCalls = null
           if (msg.toolCalls) {
             try {
-              toolCalls = typeof msg.toolCalls === 'string' ? JSON.parse(msg.toolCalls) : msg.toolCalls
+              const parsed = typeof msg.toolCalls === 'string' ? JSON.parse(msg.toolCalls) : msg.toolCalls
+              toolCalls = normalizeToolCalls(parsed)
             } catch (e) {
               toolCalls = null
             }
@@ -515,7 +594,11 @@ async function deleteSession(sessionId) {
       cancelButtonText: '取消',
       type: 'warning'
     })
-    const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`, { method: 'DELETE' })
+    const res = await apiFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' })
+    if (res.status === 401) {
+      ElMessage.error('认证失败，请检查 Token / JWT')
+      return
+    }
     if (res.ok) {
       sessions.value = sessions.value.filter(s => s.id !== sessionId)
       if (currentSessionId.value === sessionId) {
@@ -541,14 +624,14 @@ async function sendMessage(text) {
   resetStreamingState()
 
   try {
-    const res = await fetch(`${API_BASE}/api/chat`, {
+    const res = await apiFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msgText, sessionId: currentSessionId.value })
     })
 
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+      throw new Error(await readErrorMessage(res))
     }
 
     const reader = res.body.getReader()
@@ -680,6 +763,78 @@ onMounted(() => {
   loadSessions()
   autoResize()
 })
+
+function readErrorMessage(response) {
+  return response.text().then(text => {
+    if (!text) return `HTTP ${response.status}: ${response.statusText}`
+    try {
+      const parsed = JSON.parse(text)
+      return parsed.error || parsed.message || `HTTP ${response.status}: ${response.statusText}`
+    } catch (e) {
+      return text
+    }
+  })
+}
+
+function sanitizeHtml(html) {
+  if (typeof window === 'undefined' || !html) return html
+
+  const template = document.createElement('template')
+  template.innerHTML = html
+
+  const blockedTags = new Set([
+    'script', 'style', 'iframe', 'object', 'embed',
+    'link', 'meta', 'base', 'form'
+  ])
+
+  const elements = template.content.querySelectorAll('*')
+  elements.forEach(el => {
+    const tag = el.tagName.toLowerCase()
+    if (blockedTags.has(tag)) {
+      el.remove()
+      return
+    }
+
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase()
+      const value = attr.value.trim()
+
+      if (name.startsWith('on') || name === 'style') {
+        el.removeAttribute(attr.name)
+        continue
+      }
+
+      if ((name === 'href' || name === 'src' || name === 'xlink:href') && !isSafeUrl(value)) {
+        el.removeAttribute(attr.name)
+      }
+    }
+
+    if (tag === 'a') {
+      el.setAttribute('rel', 'noopener noreferrer')
+      if (!el.getAttribute('target')) {
+        el.setAttribute('target', '_blank')
+      }
+    }
+  })
+
+  return template.innerHTML
+}
+
+function isSafeUrl(url) {
+  if (!url) return true
+  const lower = url.toLowerCase()
+  return (
+    lower.startsWith('http://') ||
+    lower.startsWith('https://') ||
+    lower.startsWith('mailto:') ||
+    lower.startsWith('tel:') ||
+    lower.startsWith('#') ||
+    lower.startsWith('/') ||
+    lower.startsWith('./') ||
+    lower.startsWith('../') ||
+    lower.startsWith('data:image/')
+  )
+}
 </script>
 
 <style scoped>
@@ -705,6 +860,20 @@ onMounted(() => {
 }
 .session-sidebar.collapsed { width: 0; min-width: 0; border-right: none; }
 .sidebar-header { padding: 16px; flex-shrink: 0; }
+.auth-panel { display: flex; gap: 6px; margin-top: 10px; }
+.auth-input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px;
+  border: 1px solid #dcdfe6; border-radius: 8px; outline: none;
+  font-size: 12px; color: #606266; background: #fff;
+}
+.auth-input:focus { border-color: #409eff; }
+.auth-btn {
+  height: 34px; padding: 0 10px; border: none; border-radius: 8px;
+  background: #409eff; color: #fff; font-size: 12px; cursor: pointer;
+  white-space: nowrap;
+}
+.auth-btn.secondary { background: #f2f3f5; color: #606266; }
+.auth-btn:hover { opacity: 0.92; }
 
 .new-chat-btn {
   width: 100%;

@@ -2,7 +2,8 @@
 set -e
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENV_FILE_NAME="${ENV_FILE_NAME:-.env.sqlite}"
 
-echo "启动 server ..."
+echo "Starting server ..."
 cd "$ROOT_DIR/team-wiki-server"
-npm start
+npm run start -- --env-file "$ENV_FILE_NAME"

@@ -3,6 +3,6 @@ set -e
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-echo "启动 ui (开发模式) ..."
+echo "Starting ui (vite dev) ..."
 cd "$ROOT_DIR/team-wiki-vue-ui"
 npm run dev

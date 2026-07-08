@@ -9,6 +9,7 @@
 import { tool } from '@openai/agents';
 import { z } from 'zod';
 import { KnowledgeGraph } from '../graph/index.js';
+import type { GraphNode } from '../types.js';
 
 export function createKnowledgeTools(graph: KnowledgeGraph) {
   return [
@@ -23,7 +24,11 @@ export function createKnowledgeTools(graph: KnowledgeGraph) {
       }),
       strict: true,
       execute: async ({ query, limit }) => {
-        return JSON.stringify(graph.search(query, limit), null, 2);
+        return JSON.stringify(
+          graph.search(query, limit).map(result => decorateSearchResult(graph, result)),
+          null,
+          2
+        );
       },
     }),
 
@@ -40,7 +45,11 @@ export function createKnowledgeTools(graph: KnowledgeGraph) {
       strict: true,
       execute: async ({ tags, mode, limit }) => {
         const norm = tags.map(t => t.startsWith('#') ? t : `#${t}`);
-        return JSON.stringify(graph.searchEngine.searchByTags(norm, mode).slice(0, limit), null, 2);
+        return JSON.stringify(
+          graph.searchEngine.searchByTags(norm, mode).slice(0, limit).map(result => decorateSearchResult(graph, result)),
+          null,
+          2
+        );
       },
     }),
 
@@ -60,6 +69,7 @@ export function createKnowledgeTools(graph: KnowledgeGraph) {
         }
         const m = node.metadata;
         return JSON.stringify({
+          source: buildSourceMeta(node),
           path: m.path,
           basename: m.basename,
           frontmatter: m.frontmatter,
@@ -174,11 +184,7 @@ export function createKnowledgeTools(graph: KnowledgeGraph) {
         const results: Array<{ path: string; title: string; tags: string[] }> = [];
         for (const [p, node] of graph.nodes) {
           if (folder && !p.startsWith(folder)) continue;
-          results.push({
-            path: p,
-            title: node.metadata.basename,
-            tags: node.metadata.tags.map(t => t.name),
-          });
+          results.push(buildNoteReference(node));
           if (results.length >= limit) break;
         }
         return JSON.stringify(results, null, 2);
@@ -215,8 +221,84 @@ export function createKnowledgeTools(graph: KnowledgeGraph) {
       parameters: z.object({}),
       strict: true,
       execute: async () => {
-        return JSON.stringify(graph.getStatus(), null, 2);
+        return JSON.stringify({
+          ...graph.getStatus(),
+          topLevelFolders: summarizeTopLevelFolders(graph),
+        }, null, 2);
       },
     }),
   ];
+}
+
+function decorateSearchResult(
+  graph: KnowledgeGraph,
+  result: {
+    path: string;
+    title: string;
+    snippet: string;
+    score: number;
+    tags: string[];
+  }
+) {
+  const node = graph.nodes.get(result.path);
+  return {
+    ...result,
+    folder: getTopLevelFolder(result.path),
+    source: node ? buildSourceMeta(node) : { path: result.path },
+  };
+}
+
+function buildNoteReference(node: GraphNode) {
+  return {
+    path: node.path,
+    title: node.metadata.basename,
+    tags: node.metadata.tags.map(t => t.name),
+    source: buildSourceMeta(node),
+  };
+}
+
+function buildSourceMeta(node: GraphNode) {
+  const fm = node.metadata.frontmatter;
+  return {
+    path: node.path,
+    status: getFrontmatterText(fm, ['状态', 'status']),
+    confidence: getFrontmatterText(fm, ['可信度', '可置信度', 'confidence', 'reliability']),
+    sourceId: getFrontmatterText(fm, ['Source ID', 'source_id', 'sourceId', '证据ID', 'Evidence ID']),
+    tags: node.metadata.tags.map(t => t.name),
+  };
+}
+
+function getFrontmatterText(
+  frontmatter: Record<string, unknown>,
+  keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = frontmatter[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+  }
+  return undefined;
+}
+
+function summarizeTopLevelFolders(graph: KnowledgeGraph, limit = 12) {
+  const counts = new Map<string, number>();
+
+  for (const path of graph.nodes.keys()) {
+    const folder = getTopLevelFolder(path);
+    counts.set(folder, (counts.get(folder) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([folder, count]) => ({ folder, count }))
+    .sort((a, b) => b.count - a.count || a.folder.localeCompare(b.folder))
+    .slice(0, limit);
+}
+
+function getTopLevelFolder(path: string): string {
+  const normalized = path.replace(/\\/g, '/');
+  return normalized.includes('/') ? normalized.split('/')[0] : '(root)';
 }

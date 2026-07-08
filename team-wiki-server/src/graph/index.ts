@@ -448,6 +448,7 @@ export class KnowledgeGraph {
     this.nodes.delete(path);
     this.resolvedLinks.delete(path);
     this.unresolvedLinks.delete(path);
+    this.fileIndex.delete(path);
   }
 
   private resolveLinksForFile(meta: CachedMetadata, updateDegrees: boolean): void {
@@ -517,39 +518,66 @@ export class KnowledgeGraph {
   }
 
   private rebuildBacklinksForFile(path: string): void {
-    // Remove all backlinks pointing to this file from other files
-    for (const [, targets] of this.resolvedLinks) {
-      targets.delete(path);
+    const affected = new Set<string>([path]);
+
+    // Remove stale backlinks contributed by this file as a source.
+    for (const [target, sources] of this.backlinks) {
+      if (sources.delete(path)) {
+        affected.add(target);
+      }
+      if (sources.size === 0) {
+        this.backlinks.delete(target);
+      }
     }
 
-    // Rebuild backlinks for this file
+    // Rebuild backlinks for this file's current outgoing edges.
     const targets = this.resolvedLinks.get(path);
     if (targets) {
-      for (const target of targets.keys()) {
+      for (const [target, count] of targets) {
         let sources = this.backlinks.get(target);
         if (!sources) {
           sources = new Map();
           this.backlinks.set(target, sources);
         }
-        const count = targets.get(target) ?? 0;
-        sources.set(path, (sources.get(path) || 0) + count);
+        sources.set(path, count);
+        affected.add(target);
       }
     }
 
-    // Update degrees
-    this.updateDegree(path);
+    for (const affectedPath of affected) {
+      this.updateDegree(affectedPath);
+    }
   }
 
   private rebuildBacklinksForRemoval(path: string): void {
-    // Remove this file from everyone's resolvedLinks
-    for (const [, targets] of this.resolvedLinks) {
-      targets.delete(path);
+    const affected = new Set<string>();
+
+    // Remove backlinks pointing to the removed file.
+    const incoming = this.backlinks.get(path);
+    if (incoming) {
+      for (const source of incoming.keys()) {
+        const targets = this.resolvedLinks.get(source);
+        if (targets?.delete(path)) {
+          affected.add(source);
+        }
+      }
     }
+
+    // Remove this file from backlink sources everywhere else.
+    for (const [target, sources] of this.backlinks) {
+      if (sources.delete(path)) {
+        affected.add(target);
+      }
+      if (sources.size === 0) {
+        this.backlinks.delete(target);
+      }
+    }
+
     // Remove this file from backlinks
     this.backlinks.delete(path);
-    // Remove from all backlink entries
-    for (const [, sources] of this.backlinks) {
-      sources.delete(path);
+
+    for (const affectedPath of affected) {
+      this.updateDegree(affectedPath);
     }
   }
 

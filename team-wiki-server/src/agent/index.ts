@@ -16,11 +16,13 @@
 import { Agent } from '@openai/agents';
 import { KnowledgeGraph } from '../graph/index.js';
 import { createKnowledgeTools } from './tools.js';
-import { KNOWLEDGE_AGENT_PROMPT } from './prompts.js';
+import { buildKnowledgeAgentPrompt } from './prompts.js';
 
 export interface AgentConfig {
   /** Model name (e.g. deepseek-chat, gpt-4o) */
   model?: string;
+  /** Pre-built system prompt/instructions */
+  instructions?: string;
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -41,7 +43,7 @@ export function createKnowledgeAgent(
   const agent = new Agent({
     name: 'Knowledge Agent',
     model: cfg.model as any,
-    instructions: KNOWLEDGE_AGENT_PROMPT,
+    instructions: cfg.instructions || buildKnowledgeAgentPrompt(graph),
     tools: createKnowledgeTools(graph),
   });
 

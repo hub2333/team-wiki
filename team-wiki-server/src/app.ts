@@ -29,6 +29,7 @@ import { createProductRouter, createPublicAuthRouter, getJwtSecret } from './adm
 import { VaultGraphManager } from './graph/manager.js';
 import { getDb } from './db/index.js';
 import { DEFAULT_KNOWLEDGE_AGENT_BASE_PROMPT, SYSTEM_PROMPT_SETTING_KEY } from './agent/prompts.js';
+import { configureNodeProxyFromEnv } from './utils/proxy.js';
 
 const log = createLogger('App');
 
@@ -46,6 +47,8 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
   }
 
   // ── Configure AI Provider (DeepSeek or compatible) ──
+
+  const nodeProxy = configureNodeProxyFromEnv();
 
   // Force chat-completions API (DeepSeek doesn't support Responses API)
   setOpenAIAPI('chat_completions');
@@ -69,6 +72,7 @@ export async function startApp(configOverrides?: Partial<ServerConfig>): Promise
     db: config.dbProvider === 'postgres' ? config.dbUrl : config.dbPath,
     ai: `${config.aiBaseUrl} / ${config.aiModel}`,
     envFile: config.envFile,
+    proxy: nodeProxy ? 'enabled' : 'disabled',
   });
 
   // 1. Init database

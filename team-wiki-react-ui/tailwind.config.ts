@@ -7,12 +7,15 @@ export default {
       fontFamily: {
         sans: [
           'Inter',
-          'ui-sans-serif',
-          'system-ui',
           '-apple-system',
           'BlinkMacSystemFont',
           'Segoe UI',
+          'PingFang SC',
+          'Hiragino Sans GB',
           'Microsoft YaHei',
+          'Noto Sans CJK SC',
+          'ui-sans-serif',
+          'system-ui',
           'sans-serif',
         ],
       },

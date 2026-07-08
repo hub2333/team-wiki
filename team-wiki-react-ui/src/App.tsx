@@ -47,6 +47,7 @@ import {
   listAdminModels,
   listAdminUsers,
   listAdminVaults,
+  listModels,
   listSessions,
   login,
   reindexVault,
@@ -175,6 +176,8 @@ export default function App() {
   const [view, setView] = useState<ViewKey>('ask');
   const [defaultVaultIds, setDefaultVaultIds] = useState(loadDefaultVaultIds);
   const [selectedVaultIds, setSelectedVaultIds] = useState<string[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState('');
+  const [lastUsedModel, setLastUsedModel] = useState<ModelConfig | null>(null);
   const [scopeSettingsOpen, setScopeSettingsOpen] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -198,7 +201,6 @@ export default function App() {
     () => defaultVaultIds.filter(id => vaults.some(vault => vault.id === id)),
     [defaultVaultIds, vaults],
   );
-
   const sessionsQuery = useQuery({
     queryKey: ['sessions', token],
     queryFn: () => listSessions(token, []),
@@ -213,6 +215,14 @@ export default function App() {
     },
     enabled: Boolean(token && activeVaultIds.length),
   });
+
+  const modelsQuery = useQuery({
+    queryKey: ['models', token],
+    queryFn: () => listModels(token),
+    enabled: Boolean(token),
+  });
+  const models = modelsQuery.data?.models ?? [];
+  const selectedModel = models.find(model => model.id === selectedModelId) ?? models.find(model => model.isDefault) ?? models[0] ?? null;
 
   const overviewQuery = useQuery({
     queryKey: ['overview', token],
@@ -257,6 +267,12 @@ export default function App() {
   }, [activeVaultIds.length, validDefaultVaultIds, vaults]);
 
   useEffect(() => {
+    if (!models.length) return;
+    if (selectedModelId && models.some(model => model.id === selectedModelId)) return;
+    setSelectedModelId(models.find(model => model.isDefault)?.id ?? models[0].id);
+  }, [models, selectedModelId]);
+
+  useEffect(() => {
     if (meQuery.error) {
       clearAuth();
     }
@@ -276,6 +292,8 @@ export default function App() {
     storeToken('');
     setMessages([]);
     setCurrentSessionId(null);
+    setSelectedModelId('');
+    setLastUsedModel(null);
     setReasoningTrace(emptyReasoningTrace());
     queryClient.clear();
   }
@@ -291,6 +309,9 @@ export default function App() {
     if (sessionVaultIds.length) {
       setSelectedVaultIds(sessionVaultIds);
     }
+    const sessionModelId = typeof data.session.metadata?.modelId === 'string' ? data.session.metadata.modelId : '';
+    if (sessionModelId) setSelectedModelId(sessionModelId);
+    setLastUsedModel(null);
     setMessages(data.messages || []);
     setError('');
   }
@@ -300,8 +321,10 @@ export default function App() {
     setMessages([]);
     setError('');
     setStreamingText('');
+    setLastUsedModel(null);
     setReasoningTrace(emptyReasoningTrace());
     setSelectedVaultIds(validDefaultVaultIds.length ? validDefaultVaultIds : vaults[0] ? [vaults[0].id] : []);
+    setSelectedModelId(models.find(model => model.isDefault)?.id ?? models[0]?.id ?? '');
   }
 
   function saveDefaultScope(vaultIds: string[]) {
@@ -321,6 +344,14 @@ export default function App() {
       setError('所选知识库尚未全部进入运行时索引，请在 Knowledge 页面检查配置。');
       return;
     }
+    if (!selectedModel) {
+      setError('没有可用模型，请先在 Models 页面配置模型。');
+      return;
+    }
+    if (!selectedModel.hasApiKey) {
+      setError(`当前模型「${selectedModel.name}」缺少 API Key，请先在 Models 页面补全。`);
+      return;
+    }
 
     setInput('');
     setError('');
@@ -336,7 +367,7 @@ export default function App() {
       let finalReasoningTrace = emptyReasoningTrace();
       await streamChat(
         token,
-        { message: text, vaultIds: activeVaultIds, sessionId: currentSessionId },
+        { message: text, vaultIds: activeVaultIds, sessionId: currentSessionId, modelId: selectedModel.id },
         (event: ChatEvent) => {
           if (
             event.type === 'sub_agent_start' ||
@@ -371,6 +402,7 @@ export default function App() {
           if (event.type === 'done') {
             finalSessionId = event.sessionId ?? finalSessionId;
             if (event.sessionId) setCurrentSessionId(event.sessionId);
+            if (event.model) setLastUsedModel(event.model as ModelConfig);
           }
           if (event.type === 'error') {
             setError(event.message);
@@ -396,6 +428,7 @@ export default function App() {
       queryClient.invalidateQueries({ queryKey: ['admin-vaults', token] }),
       queryClient.invalidateQueries({ queryKey: ['admin-users', token] }),
       queryClient.invalidateQueries({ queryKey: ['admin-models', token] }),
+      queryClient.invalidateQueries({ queryKey: ['models', token] }),
       queryClient.invalidateQueries({ queryKey: ['usage-summary', token] }),
       queryClient.invalidateQueries({ queryKey: ['vault-status'] }),
     ]);
@@ -458,6 +491,12 @@ export default function App() {
             selectedVaults={selectedVaults}
             sessions={sessionsQuery.data?.sessions ?? []}
             sessionsLoading={sessionsQuery.isLoading}
+            models={models}
+            selectedModel={selectedModel}
+            lastUsedModel={lastUsedModel}
+            modelsLoading={modelsQuery.isLoading}
+            selectedModelId={selectedModelId}
+            onSelectModel={setSelectedModelId}
             indexed={activeVaultIds.length > 0 && Object.values(vaultStatusesQuery.data ?? {}).length === activeVaultIds.length && Object.values(vaultStatusesQuery.data ?? {}).every(status => status.indexed)}
             messages={messages}
             currentSessionId={currentSessionId}
@@ -674,6 +713,12 @@ function AskWorkspace(props: {
   selectedVaults: Vault[];
   sessions: Session[];
   sessionsLoading: boolean;
+  models: ModelConfig[];
+  selectedModel: ModelConfig | null;
+  lastUsedModel: ModelConfig | null;
+  modelsLoading: boolean;
+  selectedModelId: string;
+  onSelectModel: (modelId: string) => void;
   indexed: boolean;
   messages: Message[];
   currentSessionId: string | null;
@@ -695,6 +740,8 @@ function AskWorkspace(props: {
   const scopeText = props.selectedVaults.length
     ? 'Scope: ' + props.selectedVaults.length + ' vaults'
     : 'Scope not set';
+  const displayModel = props.lastUsedModel ?? props.selectedModel;
+  const modelReady = Boolean(props.selectedModel?.hasApiKey);
   const filteredSessions = props.sessions.filter(session =>
     ((session.title || '') + ' ' + scopeLabelForSession(session, props.vaults)).toLowerCase().includes(sessionFilter.toLowerCase()),
   );
@@ -776,9 +823,28 @@ function AskWorkspace(props: {
               <h2 className="truncate text-lg font-semibold">{selectedTitle}</h2>
               <p className="mt-1 text-sm text-slate-500">{scopeText}</p>
             </div>
-            <div className="flex shrink-0 items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500">
-              <Network size={14} />
-              {props.user?.role === 'admin' ? 'Full access' : 'Scoped access'}
+            <div className="flex shrink-0 items-center gap-3">
+              <label className="flex min-w-[260px] items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm shadow-slate-200/30">
+                <BrainCircuit size={15} className="text-teal-700" />
+                <span className="shrink-0 font-medium text-slate-700">Model</span>
+                <select
+                  className="min-w-0 flex-1 bg-transparent text-slate-900 outline-none disabled:text-slate-400"
+                  value={props.selectedModelId}
+                  disabled={props.isStreaming || props.modelsLoading || !props.models.length}
+                  onChange={event => props.onSelectModel(event.target.value)}
+                >
+                  {props.models.map(model => (
+                    <option key={model.id} value={model.id}>
+                      {model.name} · {model.model}{model.hasApiKey ? '' : ' · Missing key'}
+                    </option>
+                  ))}
+                </select>
+                {props.modelsLoading && <Loader2 className="shrink-0 animate-spin text-slate-400" size={14} />}
+              </label>
+              <div className="flex max-w-[220px] items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500">
+                <Network size={14} className="shrink-0" />
+                <span className="truncate">{displayModel ? `Using ${displayModel.model}` : props.user?.role === 'admin' ? 'Full access' : 'Scoped access'}</span>
+              </div>
             </div>
           </div>
         </header>
@@ -795,7 +861,7 @@ function AskWorkspace(props: {
               </p>
               <div className="mt-7 grid grid-cols-2 gap-3">
                 {quickPrompts.map(prompt => (
-                  <button key={prompt} className="rounded-lg border border-slate-200 bg-white p-4 text-left text-sm text-slate-700 transition hover:border-teal-700 hover:text-teal-800" onClick={() => props.sendMessage(prompt)}>
+                  <button key={prompt} disabled={!modelReady} className="rounded-lg border border-slate-200 bg-white p-4 text-left text-sm text-slate-700 transition hover:border-teal-700 hover:text-teal-800 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => props.sendMessage(prompt)}>
                     <Search className="mb-3 text-teal-700" size={17} />
                     {prompt}
                   </button>
@@ -831,9 +897,9 @@ function AskWorkspace(props: {
           <div className="mx-auto flex max-w-[880px] items-end gap-3 rounded-xl border border-slate-200 bg-white p-2 shadow-sm shadow-slate-200/60">
             <textarea
               className="chat-composer min-h-12 flex-1 resize-none bg-transparent px-3 py-3 outline-none"
-              placeholder={props.indexed ? 'Ask a question. Enter to send, Shift+Enter for newline' : 'Knowledge scope is not indexed yet'}
+              placeholder={!props.indexed ? 'Knowledge scope is not indexed yet' : modelReady ? 'Ask a question. Enter to send, Shift+Enter for newline' : 'Selected model is missing an API key'}
               value={props.input}
-              disabled={!props.indexed || props.isStreaming}
+              disabled={!props.indexed || props.isStreaming || !modelReady}
               onChange={event => props.setInput(event.target.value)}
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -842,7 +908,7 @@ function AskWorkspace(props: {
                 }
               }}
             />
-            <button className="flex h-11 w-11 items-center justify-center rounded-lg bg-teal-700 text-white transition hover:bg-teal-800 disabled:opacity-50" disabled={!props.input.trim() || props.isStreaming || !props.indexed} onClick={() => props.sendMessage()}>
+            <button className="flex h-11 w-11 items-center justify-center rounded-lg bg-teal-700 text-white transition hover:bg-teal-800 disabled:opacity-50" disabled={!props.input.trim() || props.isStreaming || !props.indexed || !modelReady} onClick={() => props.sendMessage()}>
               {props.isStreaming ? <Loader2 className="animate-spin" size={18} /> : <Send size={18} />}
             </button>
           </div>
@@ -1476,7 +1542,8 @@ function ModelsPage({ token, models, loading, onChanged }: { token: string; mode
                 setTestResult('');
                 try {
                   const result = await testModel(token, model.id);
-                  setTestResult(`${model.name}: ${result.ok ? 'OK' : 'Incomplete'} - ${result.message}`);
+                  const latency = typeof result.latencyMs === 'number' ? ` (${result.latencyMs}ms)` : '';
+                  setTestResult(`${model.name}: ${result.ok ? 'OK' : 'Failed'}${latency} - ${result.message}`);
                 } catch (err) {
                   setError(err instanceof Error ? err.message : '测试模型失败');
                 } finally {
@@ -1727,7 +1794,7 @@ function SystemPromptPage({ token, prompt, loading, onChanged }: { token: string
           { label: 'Source', value: sourceLabel, hint: formatTime(prompt?.updatedAt ?? undefined), tone: prompt?.source === 'database' ? 'good' : 'info' },
           { label: 'Base chars', value: draftStats.chars, hint: `${draftStats.lines} lines`, tone: 'info' },
           { label: 'Health', value: `${passedChecks}/${qualityChecks.length}`, hint: dirty ? 'unsaved changes' : 'ready', tone: passedChecks === qualityChecks.length ? 'good' : 'warn' },
-          { label: 'Previews', value: prompt?.effectivePrompts.length ?? 0, hint: 'enabled vaults', tone: 'neutral' },
+          { label: 'Previews', value: prompt?.effectivePrompts.length ?? 0, hint: 'enabled vaults', tone: 'info' },
         ]} />
 
         <div className="grid grid-cols-[minmax(0,1fr)_420px] gap-5">

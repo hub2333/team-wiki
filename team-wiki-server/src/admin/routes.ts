@@ -93,7 +93,16 @@ export function createProductRouter(config: AppConfig, vaultManager?: VaultGraph
 
   router.get('/models/default', async (_req: Request, res: Response) => {
     const model = await getDb().getDefaultModelConfig();
-    res.json({ model: model ? publicModel(model) : null });
+    res.json({ model: model?.enabled ? publicModel(model) : publicEnvModel(config) });
+  });
+
+  router.get('/models', async (_req: Request, res: Response) => {
+    const models = (await getDb().listModelConfigs())
+      .filter(model => model.enabled)
+      .map(publicModel);
+    res.json({
+      models: models.length ? models : [publicEnvModel(config)],
+    });
   });
 
   router.get('/admin/overview', requireAdmin, async (_req: Request, res: Response) => {
@@ -336,12 +345,22 @@ export function createProductRouter(config: AppConfig, vaultManager?: VaultGraph
       hasModel: Boolean(model.model),
       hasApiKey: Boolean(model.apiKey),
     };
+    if (!Object.values(checks).every(Boolean)) {
+      res.json({
+        ok: false,
+        checks,
+        message: 'Model configuration is incomplete.',
+      });
+      return;
+    }
+
+    const liveCheck = await testOpenAICompatibleModel(model);
     res.json({
-      ok: Object.values(checks).every(Boolean),
+      ok: liveCheck.ok,
       checks,
-      message: Object.values(checks).every(Boolean)
-        ? 'Model configuration is complete. Live provider calls are not executed by this dry-run test.'
-        : 'Model configuration is incomplete.',
+      message: liveCheck.message,
+      latencyMs: liveCheck.latencyMs,
+      status: liveCheck.status,
     });
   });
 
@@ -383,6 +402,74 @@ function publicModel(model: ModelConfig) {
     createdAt: model.createdAt,
     updatedAt: model.updatedAt,
   };
+}
+
+function publicEnvModel(config: AppConfig) {
+  return {
+    id: 'environment',
+    name: 'Environment default',
+    baseUrl: config.aiBaseUrl,
+    model: config.aiModel,
+    enabled: Boolean(config.aiModel),
+    isDefault: true,
+    hasApiKey: Boolean(config.aiApiKey),
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+async function testOpenAICompatibleModel(model: ModelConfig): Promise<{ ok: boolean; message: string; latencyMs: number; status?: number }> {
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(`${model.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${model.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model.model,
+        messages: [{ role: 'user', content: 'ping' }],
+        temperature: 0,
+        max_tokens: 8,
+      }),
+    });
+    const latencyMs = Date.now() - started;
+    if (!res.ok) {
+      const text = await res.text();
+      return {
+        ok: false,
+        status: res.status,
+        latencyMs,
+        message: `Provider returned ${res.status}: ${truncateProviderError(text)}`,
+      };
+    }
+    return {
+      ok: true,
+      status: res.status,
+      latencyMs,
+      message: `Live model check passed in ${latencyMs}ms.`,
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - started;
+    return {
+      ok: false,
+      latencyMs,
+      message: err instanceof Error && err.name === 'AbortError'
+        ? 'Live model check timed out after 15000ms.'
+        : `Live model check failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function truncateProviderError(text: string): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  return compact.length > 240 ? `${compact.slice(0, 240)}...` : compact || 'empty response';
 }
 
 function normalizeIdList(raw: unknown): string[] {

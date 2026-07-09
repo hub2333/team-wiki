@@ -16,14 +16,14 @@ echo ""
 echo "========================================="
 echo "  Starting ui (vite dev) ..."
 echo "========================================="
-cd "$ROOT_DIR/team-wiki-vue-ui"
+cd "$ROOT_DIR/team-wiki-react-ui"
 npm run dev &
 UI_PID=$!
 echo "ui PID: $UI_PID"
 
 echo ""
 echo "server -> http://localhost:3100"
-echo "ui     -> http://localhost:3101"
+echo "ui     -> http://localhost:3202"
 echo "env    -> $ENV_FILE_NAME"
 echo ""
 echo "Press Ctrl+C to stop both services"

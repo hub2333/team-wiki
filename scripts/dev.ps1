@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $PSScriptRoot
 $EnvFileName = if ($env:ENV_FILE_NAME) { $env:ENV_FILE_NAME } else { ".env.sqlite" }
 $ServerPort = 3100
-$UiPort = 3101
+$UiPort = 3202
 
 function Stop-PortProcess {
   param(
@@ -30,7 +30,7 @@ Stop-PortProcess -Port $ServerPort -Name "server"
 Stop-PortProcess -Port $UiPort -Name "ui"
 
 $serverCommand = "Set-Location '$($RootDir.Replace("'", "''"))\team-wiki-server'; `$env:ENV_FILE='$EnvFileName'; npm run dev"
-$uiCommand = "Set-Location '$($RootDir.Replace("'", "''"))\team-wiki-vue-ui'; npm run dev"
+$uiCommand = "Set-Location '$($RootDir.Replace("'", "''"))\team-wiki-react-ui'; npm run dev"
 
 Write-Host "========================================="
 Write-Host "  Starting server (watch) ..."

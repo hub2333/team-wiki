@@ -3,7 +3,7 @@ set -e
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER_PORT=3100
-UI_PORT=3101
+UI_PORT=3202
 ENV_FILE_NAME="${ENV_FILE_NAME:-.env.sqlite}"
 
 kill_port() {
@@ -38,7 +38,7 @@ echo ""
 echo "========================================="
 echo "  Starting ui (watch) ..."
 echo "========================================="
-cd "$ROOT_DIR/team-wiki-vue-ui"
+cd "$ROOT_DIR/team-wiki-react-ui"
 npm run dev &
 UI_PID=$!
 echo "ui PID: $UI_PID"

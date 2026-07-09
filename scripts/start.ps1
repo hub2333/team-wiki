@@ -4,7 +4,7 @@ $RootDir = Split-Path -Parent $PSScriptRoot
 $EnvFileName = if ($env:ENV_FILE_NAME) { $env:ENV_FILE_NAME } else { ".env.sqlite" }
 
 $serverCommand = "Set-Location '$($RootDir.Replace("'", "''"))\team-wiki-server'; `$env:ENV_FILE='$EnvFileName'; npm run start"
-$uiCommand = "Set-Location '$($RootDir.Replace("'", "''"))\team-wiki-vue-ui'; npm run dev"
+$uiCommand = "Set-Location '$($RootDir.Replace("'", "''"))\team-wiki-react-ui'; npm run dev"
 
 Write-Host "========================================="
 Write-Host "  Starting server ..."
@@ -19,7 +19,7 @@ $uiProcess = Start-Process powershell -WindowStyle Hidden -ArgumentList @("-NoPr
 
 Write-Host ""
 Write-Host "server -> http://localhost:3100"
-Write-Host "ui     -> http://localhost:3101"
+Write-Host "ui     -> http://localhost:3202"
 Write-Host "env    -> $EnvFileName"
 Write-Host "server PID -> $($serverProcess.Id)"
 Write-Host "ui PID     -> $($uiProcess.Id)"

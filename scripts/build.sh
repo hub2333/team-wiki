@@ -14,7 +14,7 @@ echo ""
 echo "========================================="
 echo "  Building ui..."
 echo "========================================="
-cd "$ROOT_DIR/team-wiki-vue-ui"
+cd "$ROOT_DIR/team-wiki-react-ui"
 npm run build
 echo "ui build complete"
 

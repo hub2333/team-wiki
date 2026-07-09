@@ -226,6 +226,7 @@ export function createChatRouter(
         metadata: {
           usage,
           model: publicRuntimeModel(selectedModel),
+          sources,
         },
       });
 

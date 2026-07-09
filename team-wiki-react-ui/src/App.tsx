@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,8 +6,10 @@ import {
   Activity,
   Bot,
   BrainCircuit,
+  Check,
   CheckCircle2,
   CircleAlert,
+  Copy,
   Database,
   FileSearch,
   Gauge,
@@ -64,7 +66,7 @@ import {
 } from './lib/api';
 import { streamChat, type ChatEvent } from './lib/sse';
 import { cn, compactNumber, formatTime, parseToolCalls } from './lib/utils';
-import type { AdminUser, ChatUsage, Message, ModelConfig, Overview, ReasoningTrace, Session, SystemPromptResponse, ToolCall, UsageSummary, User, Vault } from './types';
+import type { AdminUser, ChatSource, ChatUsage, Message, ModelConfig, Overview, ReasoningTrace, Session, SystemPromptResponse, ToolCall, UsageSummary, User, Vault } from './types';
 
 type ViewKey = 'ask' | 'knowledge' | 'people' | 'models' | 'agents' | 'insights' | 'settings';
 
@@ -384,6 +386,7 @@ export default function App() {
       let fullToolEvents: ToolCall[] = [];
       let finalReasoningTrace = emptyReasoningTrace();
       let finalUsage: ChatUsage | undefined;
+      let finalSources: ChatSource[] = [];
       await streamChat(
         token,
         { message: text, vaultIds: activeVaultIds, sessionId: currentSessionId, modelId: selectedModel.id },
@@ -422,6 +425,7 @@ export default function App() {
             finalSessionId = event.sessionId ?? finalSessionId;
             if (event.sessionId) setCurrentSessionId(event.sessionId);
             if (event.usage) finalUsage = event.usage;
+            finalSources = event.sources ?? [];
             if (event.model) setLastUsedModel(event.model as ModelConfig);
           }
           if (event.type === 'error') {
@@ -430,7 +434,17 @@ export default function App() {
         },
       );
 
-      setMessages(prev => [...prev, { role: 'assistant', content: fullText, toolCalls: fullToolEvents, reasoningTrace: finalReasoningTrace, usage: finalUsage, metadata: finalUsage ? { usage: finalUsage } : undefined }]);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: fullText,
+        toolCalls: fullToolEvents,
+        reasoningTrace: finalReasoningTrace,
+        usage: finalUsage,
+        metadata: {
+          ...(finalUsage ? { usage: finalUsage } : {}),
+          ...(finalSources.length ? { sources: finalSources } : {}),
+        },
+      }]);
       if (finalSessionId) setCurrentSessionId(finalSessionId);
       await queryClient.invalidateQueries({ queryKey: ['sessions', token] });
     } catch (err) {
@@ -1013,18 +1027,16 @@ function AskWorkspace(props: {
               </div>
             </div>
           ) : (
-            <div className="mx-auto max-w-[880px] space-y-6">
+            <div className="mx-auto max-w-[760px] space-y-5">
               {props.messages.map((message, index) => (
                 <ChatBubble key={message.role + '-' + index} message={message} />
               ))}
               {props.isStreaming && (
-                <div className="flex justify-start">
-                  <div className="chat-message max-w-[760px] rounded-lg border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/40">
+                <div className="chat-message chat-message-assistant rounded-xl border border-slate-200/70 bg-white px-5 py-4 shadow-sm shadow-slate-200/40">
                     <ReasoningSummary trace={props.reasoningTrace} />
                     <div data-streaming-text className="mt-3">
-                      <MarkdownContent>{props.streamingText || 'Searching selected knowledge...'}</MarkdownContent>
+                      <StreamingMarkdownContent content={props.streamingText || 'Searching selected knowledge...'} />
                     </div>
-                  </div>
                 </div>
               )}
             </div>
@@ -1152,12 +1164,60 @@ function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading
   );
 }
 
-function MarkdownContent({ children }: { children: string }) {
+function MarkdownContent({ children, sources = [] }: { children: string; sources?: ChatSource[] }) {
+  function highlightSource(event: MouseEvent<HTMLAnchorElement>, href?: string) {
+    const sourceMatch = href?.match(/^#source-(\d+)$/);
+    if (!sourceMatch) return;
+
+    event.preventDefault();
+    const target = document.getElementById(`source-${sourceMatch[1]}`);
+    if (!target) return;
+
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.remove('source-highlight');
+    window.setTimeout(() => {
+      target.classList.add('source-highlight');
+    }, 80);
+    window.setTimeout(() => {
+      target.classList.remove('source-highlight');
+    }, 1700);
+    window.history.replaceState(null, '', href);
+  }
+
   return (
     <div className="chat-prose">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ href, children, ...props }) => {
+            const sourceMatch = href?.match(/^#source-(\d+)$/);
+            if (sourceMatch) {
+              const source = sources[Number(sourceMatch[1]) - 1];
+              return (
+                <span className="source-ref">
+                  <a href={href} onClick={event => highlightSource(event, href)} {...props}>[{sourceMatch[1]}]</a>
+                  {source && (
+                    <span className="source-preview" role="tooltip">
+                      <span className="source-preview-title">{source.title || basenameFromPath(source.path)}</span>
+                      <span className="source-preview-path">{source.path}</span>
+                      {source.vaultName && <span className="source-preview-vault">{source.vaultName}</span>}
+                    </span>
+                  )}
+                </span>
+              );
+            }
+            return <a href={href} {...props}>{children}</a>;
+          },
+        }}
+      >
+        {children}
+      </ReactMarkdown>
     </div>
   );
+}
+
+function StreamingMarkdownContent({ content }: { content: string }) {
+  return <MarkdownContent>{buildKnowledgeCitationView(content, []).content}</MarkdownContent>;
 }
 
 function DeleteSessionsModal({ open, count, busy, onClose, onConfirm }: {
@@ -1318,23 +1378,86 @@ function ChatBubble({ message }: { message: Message }) {
   const isUser = message.role === 'user';
   const calls = parseToolCalls(message.toolCalls);
   const usage = getMessageUsage(message);
+  const citationView = buildKnowledgeCitationView(message.content, getMessageSources(message));
   return (
-    <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
-      <div className={cn(
-        'rounded-lg',
-        isUser
-          ? 'chat-message-user max-w-[72%] bg-slate-950 p-4 text-white'
-          : 'chat-message max-w-[760px] border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/40',
-      )}>
-        {!isUser && message.reasoningTrace && <ReasoningSummary trace={message.reasoningTrace} />}
-        {isUser ? <p>{message.content}</p> : <MarkdownContent>{message.content}</MarkdownContent>}
-        {!isUser && (calls.length > 0 || usage) && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-            {calls.length > 0 && <span className="rounded-full bg-slate-100 px-2 py-1">Searches {calls.length}</span>}
-            {usage && <UsagePill usage={usage} />}
+    <div className={cn('message-row group', isUser ? 'message-row-user' : 'message-row-assistant')}>
+      <div className={cn(isUser ? 'message-user-stack' : 'block')}>
+        <div className={cn(
+          'rounded-xl relative',
+          isUser
+            ? 'chat-message-user bg-slate-950 px-3.5 py-2.5 text-white shadow-sm shadow-slate-950/10'
+            : 'chat-message chat-message-assistant border border-slate-200/70 bg-white px-5 pb-3.5 pt-4 shadow-sm shadow-slate-200/40',
+        )}>
+          {!isUser && message.reasoningTrace && <ReasoningSummary trace={message.reasoningTrace} />}
+          {isUser ? <p>{message.content}</p> : <MarkdownContent sources={citationView.sources}>{citationView.content}</MarkdownContent>}
+          {!isUser && citationView.sources.length > 0 && <KnowledgeSources sources={citationView.sources} />}
+          {!isUser && (
+            <div className="message-footer">
+              <CopyMessageButton text={message.content} />
+              {(calls.length > 0 || usage) && <MessageMeta calls={calls.length} usage={usage} />}
+            </div>
+          )}
+        </div>
+        {isUser ? (
+          <div className="message-actions message-actions-user">
+            {message.createdAt && <span className="text-[11px] text-slate-400">{formatTime(message.createdAt)}</span>}
+            <CopyMessageButton text={message.content} />
           </div>
-        )}
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+function CopyMessageButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyMessage() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <button type="button" className="message-copy-button" onClick={copyMessage} aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy'}>
+      {copied ? <Check size={14} /> : <Copy size={14} />}
+    </button>
+  );
+}
+
+function KnowledgeSources({ sources }: { sources: ChatSource[] }) {
+  const visibleSources = dedupeSources(sources).slice(0, 6);
+  if (!visibleSources.length) return null;
+
+  return (
+    <div className="mt-5 border-t border-slate-100 pt-3">
+      <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Sources</div>
+      <ol className="space-y-1.5 text-xs leading-5 text-slate-500">
+        {visibleSources.map((source, index) => (
+          <li id={`source-${index + 1}`} key={`${source.vaultId || 'default'}:${source.path}`} className="source-item flex gap-2 scroll-mt-8">
+            <span className="min-w-4 text-right text-slate-400">{index + 1}.</span>
+            <span className="min-w-0">
+              <span className="font-medium text-slate-600">{source.title || basenameFromPath(source.path)}</span>
+              <span className="mx-1.5 text-slate-300">/</span>
+              <span className="break-all text-slate-400">{source.path}</span>
+              {source.vaultName && <span className="ml-1.5 text-slate-400">({source.vaultName})</span>}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function MessageMeta({ calls, usage }: { calls: number; usage?: ChatUsage }) {
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-slate-400">
+      {calls > 0 && <span className="rounded-full bg-slate-50 px-2 py-1 text-slate-500">Searches {calls}</span>}
+      {usage && <UsagePill usage={usage} />}
     </div>
   );
 }
@@ -1349,10 +1472,10 @@ function UsagePill({ usage }: { usage: ChatUsage }) {
   ].filter(Boolean) as Array<[string, string]>;
 
   return (
-    <span className="inline-flex flex-wrap items-center overflow-hidden rounded-full border border-teal-100 bg-teal-50 text-xs text-teal-800">
+    <span className="inline-flex flex-wrap items-center overflow-hidden rounded-full border border-slate-200 bg-slate-50 text-[11px] text-slate-500">
       {items.map(([label, value], index) => (
-        <span key={label} className={cn('px-2 py-1', index > 0 && 'border-l border-teal-200/80')}>
-          <span className="text-teal-600">{label}</span> {value}
+        <span key={label} className={cn('px-2 py-1', index > 0 && 'border-l border-slate-200')}>
+          <span className="text-slate-400">{label}</span> {value}
         </span>
       ))}
     </span>
@@ -1363,6 +1486,76 @@ function getMessageUsage(message: Message): ChatUsage | undefined {
   const usage = message.usage ?? message.metadata?.usage;
   if (!usage || typeof usage !== 'object') return undefined;
   return usage;
+}
+
+function getMessageSources(message: Message): ChatSource[] {
+  if (Array.isArray(message.metadata?.sources)) return message.metadata.sources;
+  return [];
+}
+
+function dedupeSources(sources: ChatSource[]): ChatSource[] {
+  const seen = new Set<string>();
+  const result: ChatSource[] = [];
+  for (const source of sources) {
+    if (!source.path) continue;
+    const key = `${source.vaultId || 'default'}:${source.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(source);
+  }
+  return result;
+}
+
+function buildKnowledgeCitationView(content: string, metadataSources: ChatSource[]) {
+  const sources = dedupeSources(metadataSources);
+  const sourceIndex = new Map<string, number>();
+
+  function ensureSource(path: string) {
+    const normalizedPath = normalizeSourcePath(path);
+    const key = `default:${normalizedPath}`;
+    const existingByPath = sources.findIndex(source => normalizeSourcePath(source.path) === normalizedPath);
+    if (existingByPath >= 0) {
+      sourceIndex.set(key, existingByPath + 1);
+      return existingByPath + 1;
+    }
+    if (sourceIndex.has(key)) return sourceIndex.get(key)!;
+
+    const nextIndex = sources.length + 1;
+    sources.push({
+      title: basenameFromPath(normalizedPath),
+      path: normalizedPath,
+    });
+    sourceIndex.set(key, nextIndex);
+    return nextIndex;
+  }
+
+  const transformed = content.replace(
+    /(?:\*\*)?\s*[\[【]\s*(?:来源|Source)\s*[:：]\s*([^\]】]+?)\s*[\]】]\s*(?:\*\*)?/gi,
+    (_match, rawPath: string) => {
+      const index = ensureSource(rawPath);
+      return `[[${index}]](#source-${index})`;
+    },
+  );
+
+  const cleaned = transformed.replace(/(\]\(#source-\d+\)(?:\s+\]\(#source-\d+\))*)\s*---/g, '$1');
+
+  return {
+    content: cleaned,
+    sources,
+  };
+}
+
+function normalizeSourcePath(path: string) {
+  return path
+    .replace(/[;；,，。.\s]+$/g, '')
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .trim();
+}
+
+function basenameFromPath(path: string) {
+  const normalized = path.replace(/\\/g, '/');
+  const file = normalized.split('/').pop() || path;
+  return file.replace(/\.md$/i, '');
 }
 
 function formatTokenCount(tokens: number) {

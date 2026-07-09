@@ -1571,7 +1571,17 @@ function buildKnowledgeCitationView(content: string, metadataSources: ChatSource
     return nextIndex;
   }
 
-  const transformed = content.replace(
+  const withoutObsidianLinks = content.replace(
+    /\s*[—-]\s*\[(\d+)\]\((obsidian:\/\/open\?[^)]+)\)/gi,
+    (_match, _label: string, href: string) => {
+      const path = extractObsidianFilePath(href);
+      if (!path) return '';
+      const index = ensureSource(path);
+      return ` [[${index}]](#source-${index})`;
+    },
+  );
+
+  const transformed = withoutObsidianLinks.replace(
     /(?:\*\*)?\s*[\[【]\s*(?:来源|Source)\s*[:：]\s*([^\]】]+?)\s*[\]】]\s*(?:\*\*)?/gi,
     (_match, rawPath: string) => {
       const index = ensureSource(rawPath);
@@ -1585,6 +1595,16 @@ function buildKnowledgeCitationView(content: string, metadataSources: ChatSource
     content: cleaned,
     sources,
   };
+}
+
+function extractObsidianFilePath(href: string) {
+  try {
+    const url = new URL(href);
+    return normalizeSourcePath(url.searchParams.get('file') || '');
+  } catch {
+    const match = href.match(/[?&]file=([^&]+)/i);
+    return match ? normalizeSourcePath(decodeURIComponent(match[1])) : '';
+  }
 }
 
 function normalizeSourcePath(path: string) {

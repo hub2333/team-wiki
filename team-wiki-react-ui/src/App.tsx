@@ -8,6 +8,7 @@ import {
   BrainCircuit,
   Check,
   CheckCircle2,
+  ChevronDown,
   CircleAlert,
   Copy,
   Database,
@@ -993,17 +994,6 @@ function AskWorkspace(props: {
               <h2 className="truncate text-lg font-semibold">{selectedTitle}</h2>
               <p className="mt-1 text-sm text-slate-500">{scopeText}</p>
             </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <ModelPicker
-                models={props.models}
-                selectedModel={props.selectedModel}
-                selectedModelId={props.selectedModelId}
-                disabled={props.isStreaming || props.modelsLoading || !props.models.length}
-                loading={props.modelsLoading}
-                onSelect={props.onSelectModel}
-              />
-
-            </div>
           </div>
         </header>
 
@@ -1050,9 +1040,9 @@ function AskWorkspace(props: {
               {props.error}
             </div>
           )}
-          <div className="mx-auto flex max-w-[880px] items-end gap-3 rounded-xl border border-slate-200 bg-white p-2 shadow-sm shadow-slate-200/60">
+          <div className="mx-auto max-w-[880px] rounded-xl border border-slate-200 bg-white p-2 shadow-sm shadow-slate-200/60">
             <textarea
-              className="chat-composer min-h-12 flex-1 resize-none bg-transparent px-3 py-3 outline-none"
+              className="chat-composer min-h-12 w-full resize-none bg-transparent px-3 py-3 outline-none"
               placeholder={!props.indexed ? 'Knowledge scope is not indexed yet' : modelReady ? 'Ask a question. Enter to send, Shift+Enter for newline' : 'Selected model is missing an API key'}
               value={props.input}
               disabled={!props.indexed || props.isStreaming || !modelReady}
@@ -1064,22 +1054,34 @@ function AskWorkspace(props: {
                 }
               }}
             />
-            <button className="flex h-11 w-11 items-center justify-center rounded-lg bg-teal-700 text-white transition hover:bg-teal-800 disabled:opacity-50" disabled={!props.input.trim() || props.isStreaming || !props.indexed || !modelReady} onClick={() => props.sendMessage()}>
-              {props.isStreaming ? <Loader2 className="animate-spin" size={18} /> : <Send size={18} />}
-            </button>
+            <div className="flex items-center justify-end gap-2 px-1 pb-1">
+              <ModelPicker
+                models={props.models}
+                selectedModel={props.selectedModel}
+                selectedModelId={props.selectedModelId}
+                disabled={props.isStreaming || props.modelsLoading || !props.models.length}
+                loading={props.modelsLoading}
+                onSelect={props.onSelectModel}
+                compact
+              />
+              <button className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-teal-700 text-white transition hover:bg-teal-800 disabled:opacity-50" disabled={!props.input.trim() || props.isStreaming || !props.indexed || !modelReady} onClick={() => props.sendMessage()}>
+                {props.isStreaming ? <Loader2 className="animate-spin" size={18} /> : <Send size={18} />}
+              </button>
+            </div>
           </div>
         </footer>
       </section>
     </main>
   );
 }
-function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading, onSelect }: {
+function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading, onSelect, compact = false }: {
   models: ModelConfig[];
   selectedModel: ModelConfig | null;
   selectedModelId: string;
   disabled: boolean;
   loading: boolean;
   onSelect: (modelId: string) => void;
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const activeModel = selectedModel ?? models.find(model => model.id === selectedModelId) ?? models[0] ?? null;
@@ -1089,76 +1091,116 @@ function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading
   }, [disabled]);
 
   return (
-    <div className="relative w-[340px] shrink-0">
+    <div className={cn('relative shrink-0', compact ? 'w-auto max-w-[calc(100%-52px)]' : 'w-[340px]')}>
       <button
         type="button"
         className={cn(
-          'flex h-12 w-full items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 text-left shadow-sm shadow-slate-200/40 transition hover:border-teal-200 hover:bg-teal-50/30 disabled:cursor-not-allowed disabled:opacity-60',
-          open && 'border-teal-300 ring-4 ring-teal-700/10',
+          'flex w-full items-center rounded-lg text-left transition disabled:cursor-not-allowed disabled:opacity-60',
+          compact
+            ? 'h-11 gap-2 px-2.5 text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+            : 'h-12 gap-3 border border-slate-200 bg-white px-3 shadow-sm shadow-slate-200/40 hover:border-teal-200 hover:bg-teal-50/30',
+          compact && activeModel && !activeModel.hasApiKey && 'text-amber-700 hover:bg-amber-50 hover:text-amber-800',
+          !compact && activeModel && !activeModel.hasApiKey && 'border-amber-200 bg-amber-50/60 hover:border-amber-300 hover:bg-amber-50',
+          open && (compact ? 'bg-slate-100 text-slate-950' : 'border-teal-300 ring-4 ring-teal-700/10'),
         )}
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen(prev => !prev)}
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-teal-50 text-teal-700">
-          {loading ? <Loader2 className="animate-spin" size={16} /> : <BrainCircuit size={16} />}
+        <span className={cn('flex shrink-0 items-center justify-center rounded-md', compact ? 'h-6 w-6 text-slate-500' : 'h-8 w-8 bg-teal-50 text-teal-700')}>
+          {loading ? <Loader2 className="animate-spin" size={compact ? 14 : 16} /> : <BrainCircuit size={compact ? 14 : 16} />}
         </span>
-        <span className="min-w-0 flex-1">
+        <span className={cn('min-w-0', compact ? 'max-w-[140px]' : 'flex-1')}>
           <span className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold text-slate-900">{activeModel?.name || 'No model'}</span>
-            {activeModel?.isDefault && <span className="rounded-full bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-700">Default</span>}
+            {activeModel?.isDefault && !compact && <span className="rounded-full bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-700">Default</span>}
           </span>
-          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-slate-500">
+          <span className={cn('mt-0.5 min-w-0 items-center gap-1.5 text-[11px] text-slate-500', compact ? 'hidden' : 'flex')}>
             <span className="truncate">{activeModel ? getProviderName(activeModel.baseUrl) : 'Not configured'}</span>
             {activeModel && <span className="text-slate-300">/</span>}
             {activeModel && <span className="truncate font-mono">{activeModel.model}</span>}
           </span>
         </span>
-        <span className={cn('shrink-0 text-xs', activeModel?.hasApiKey ? 'text-emerald-600' : 'text-amber-600')}>
+        <span className={cn('shrink-0 text-xs', compact && 'hidden', activeModel?.hasApiKey ? 'text-emerald-600' : 'text-amber-600')}>
           {activeModel?.hasApiKey ? 'Ready' : 'Key missing'}
         </span>
+        {compact && <ChevronDown className={cn('shrink-0 transition', open && 'rotate-180')} size={14} />}
       </button>
 
       {open && (
-        <div className="absolute right-0 z-30 mt-2 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl shadow-slate-950/12" role="listbox">
-          <div className="border-b border-slate-100 px-3 py-2 text-[11px] font-semibold uppercase text-slate-400">Model routes</div>
-          <div className="max-h-72 overflow-auto p-1.5">
-            {models.map(model => {
-              const selected = model.id === selectedModelId;
-              return (
-                <button
-                  key={model.id}
-                  type="button"
-                  className={cn(
-                    'flex w-full items-start gap-3 rounded-md px-2.5 py-2 text-left transition hover:bg-slate-50',
-                    selected && 'bg-teal-50',
-                  )}
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => {
-                    onSelect(model.id);
-                    setOpen(false);
-                  }}
-                >
-                  <span className={cn('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border', selected ? 'border-teal-600 bg-teal-600 text-white' : 'border-slate-200 text-transparent')}>
-                    <CheckCircle2 size={13} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-slate-900">{model.name}</span>
-                      {model.isDefault && <SoftBadge tone="info">Default</SoftBadge>}
+        compact ? (
+          <div className="absolute bottom-full right-0 z-30 mb-2 w-52 overflow-hidden rounded-xl border border-slate-200 bg-white py-2 shadow-xl shadow-slate-950/12" role="listbox">
+            <div className="px-3 pb-1 text-xs text-slate-400">Model</div>
+            <div className="max-h-64 overflow-auto px-1.5">
+              {models.map(model => {
+                const selected = model.id === selectedModelId;
+                return (
+                  <button
+                    key={model.id}
+                    type="button"
+                    className={cn(
+                      'flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left transition hover:bg-slate-100 hover:text-slate-950',
+                      selected && 'text-slate-950',
+                      !model.hasApiKey && 'text-amber-700 hover:bg-amber-50 hover:text-amber-800',
+                    )}
+                    role="option"
+                    aria-selected={selected}
+                    onClick={() => {
+                      onSelect(model.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm text-slate-900">{model.name}</span>
+                      <span className="mt-0.5 block truncate font-mono text-[11px] text-slate-500">{model.model}</span>
                     </span>
-                    <span className="mt-1 block truncate text-xs text-slate-500">{getProviderName(model.baseUrl)} / {model.model}</span>
-                  </span>
-                  <span className={cn('mt-0.5 rounded-full px-2 py-0.5 text-[11px]', model.hasApiKey ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700')}>
-                    {model.hasApiKey ? 'Ready' : 'Missing key'}
-                  </span>
-                </button>
-              );
-            })}
+                    {selected && <Check size={15} className="shrink-0 text-slate-600" />}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="absolute right-0 z-30 mt-2 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl shadow-slate-950/12" role="listbox">
+            <div className="border-b border-slate-100 px-3 py-2 text-[11px] font-semibold uppercase text-slate-400">Model routes</div>
+            <div className="max-h-72 overflow-auto p-1.5">
+              {models.map(model => {
+                const selected = model.id === selectedModelId;
+                return (
+                  <button
+                    key={model.id}
+                    type="button"
+                    className={cn(
+                      'flex w-full items-start gap-3 rounded-md px-2.5 py-2 text-left transition hover:bg-slate-50',
+                      selected && 'bg-teal-50',
+                    )}
+                    role="option"
+                    aria-selected={selected}
+                    onClick={() => {
+                      onSelect(model.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <span className={cn('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border', selected ? 'border-teal-600 bg-teal-600 text-white' : 'border-slate-200 text-transparent')}>
+                      <CheckCircle2 size={13} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-slate-900">{model.name}</span>
+                        {model.isDefault && <SoftBadge tone="info">Default</SoftBadge>}
+                      </span>
+                      <span className="mt-1 block truncate text-xs text-slate-500">{getProviderName(model.baseUrl)} / {model.model}</span>
+                    </span>
+                    <span className={cn('mt-0.5 rounded-full px-2 py-0.5 text-[11px]', model.hasApiKey ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700')}>
+                      {model.hasApiKey ? 'Ready' : 'Missing key'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )
       )}
     </div>
   );

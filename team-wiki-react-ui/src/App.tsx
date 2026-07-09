@@ -2340,6 +2340,7 @@ function SystemPromptPage({ token, prompt, loading, onChanged }: { token: string
   const [draft, setDraft] = useState('');
   const [selectedVaultId, setSelectedVaultId] = useState('');
   const [previewMode, setPreviewMode] = useState<'runtime' | 'base'>('runtime');
+  const [activeTab, setActiveTab] = useState<'behavior' | 'sources' | 'safety' | 'advanced'>('behavior');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -2354,7 +2355,7 @@ function SystemPromptPage({ token, prompt, loading, onChanged }: { token: string
 
   const selectedPreview = prompt?.effectivePrompts.find(item => item.vaultId === selectedVaultId) ?? prompt?.effectivePrompts[0];
   const dirty = Boolean(prompt && draft.trim() !== prompt.basePrompt.trim());
-  const sourceLabel = prompt?.source === 'database' ? '数据库' : prompt?.source === 'environment' ? '环境变量' : prompt?.source === 'default' ? '默认模板' : '-';
+  const sourceLabel = prompt?.source === 'database' ? 'Database' : prompt?.source === 'environment' ? 'Environment' : prompt?.source === 'default' ? 'Default template' : '-';
   const draftStats = useMemo(() => {
     const trimmed = draft.trim();
     return {
@@ -2367,33 +2368,39 @@ function SystemPromptPage({ token, prompt, loading, onChanged }: { token: string
     const text = draft.toLowerCase();
     return [
       {
-        label: '证据边界',
-        description: '要求模型在证据不足时说明不确定。',
-        ok: /不确定|未找到|证据不足|不要.*编造|不把.*编造/.test(draft),
+        label: 'Evidence boundary',
+        description: 'The assistant should say when evidence is insufficient instead of inventing facts.',
+        ok: /insufficient|not enough|uncertain|unknown|do not invent|do not fabricate|evidence/.test(text),
       },
       {
-        label: '来源路径',
-        description: '要求关键结论标注知识库来源。',
-        ok: /来源|路径|source|path/.test(text),
+        label: 'Source paths',
+        description: 'Important claims should keep knowledge-base source paths or source labels.',
+        ok: /source|sources|path|citation|citations/.test(text),
       },
       {
-        label: '工具读取',
-        description: '要求先检索并读取原始文档。',
-        ok: /read_note|search|检索|读取/.test(text),
+        label: 'Tool-first reading',
+        description: 'The assistant should search and read original notes before drawing conclusions.',
+        ok: /read_note|search|read|tool/.test(text),
       },
       {
-        label: '团队场景',
-        description: '覆盖中文、团队和多知识库协作语境。',
-        ok: /中文/.test(draft) && /团队|知识库|vault|跨多个/.test(draft),
+        label: 'Team context',
+        description: 'The prompt should fit Chinese team knowledge-base collaboration.',
+        ok: /vault|team|knowledge|knowledge base|chinese/.test(text),
       },
     ];
   }, [draft]);
   const passedChecks = qualityChecks.filter(item => item.ok).length;
-  const previewText = previewMode === 'base' ? draft : selectedPreview?.prompt || '暂无运行时预览。';
+  const previewText = previewMode === 'base' ? draft : selectedPreview?.prompt || 'No runtime preview.';
+  const tabs = [
+    { key: 'behavior' as const, label: 'Behavior' },
+    { key: 'sources' as const, label: 'Sources' },
+    { key: 'safety' as const, label: 'Safety' },
+    { key: 'advanced' as const, label: 'Advanced' },
+  ];
 
   async function save() {
     if (!draft.trim()) {
-      setError('系统提示词不能为空。');
+      setError('System prompt cannot be empty.');
       return;
     }
     setSaving(true);
@@ -2402,7 +2409,7 @@ function SystemPromptPage({ token, prompt, loading, onChanged }: { token: string
       await updateSystemPrompt(token, draft);
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '保存系统提示词失败');
+      setError(err instanceof Error ? err.message : 'Failed to save system prompt.');
     } finally {
       setSaving(false);
     }
@@ -2411,116 +2418,196 @@ function SystemPromptPage({ token, prompt, loading, onChanged }: { token: string
   return (
     <AdminShell
       icon={Settings}
-      title="System prompt"
-      description="管理团队问答 Agent 的基础行为准则。运行时会按知识库追加索引摘要，最终组合后交给模型执行。"
+      title="Settings"
+      description="Configure how the Ask agent behaves, cites sources, and handles uncertain answers."
       action={<RefreshButton loading={loading} onClick={onChanged} />}
     >
       <div className="space-y-5">
-        <AdminStatsBar items={[
-          { label: 'Source', value: sourceLabel, hint: formatTime(prompt?.updatedAt ?? undefined), tone: prompt?.source === 'database' ? 'good' : 'info' },
-          { label: 'Base chars', value: draftStats.chars, hint: `${draftStats.lines} lines`, tone: 'info' },
-          { label: 'Health', value: `${passedChecks}/${qualityChecks.length}`, hint: dirty ? 'unsaved changes' : 'ready', tone: passedChecks === qualityChecks.length ? 'good' : 'warn' },
-          { label: 'Previews', value: prompt?.effectivePrompts.length ?? 0, hint: 'enabled vaults', tone: 'info' },
-        ]} />
-
-        <div className="grid grid-cols-[minmax(0,1fr)_420px] gap-5">
-          <section className="rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/30">
-            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/30">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-slate-950">Agent settings</h2>
+                <SoftBadge tone={dirty ? 'warn' : 'good'}>{dirty ? 'Unsaved' : 'Synced'}</SoftBadge>
+              </div>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
+                Current policy: knowledge-first answers, source-aware citations, and conservative handling when evidence is weak.
+              </p>
+            </div>
+            <div className="grid grid-cols-4 gap-3 text-right text-xs">
               <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-base font-semibold">基础提示词</h2>
-                  <SoftBadge tone={dirty ? 'warn' : 'good'}>{dirty ? '未保存' : '已同步'}</SoftBadge>
-                </div>
-                <p className="mt-1 text-sm leading-6 text-slate-500">
-                  这部分定义团队问答的长期行为，知识库索引摘要会在运行时自动拼接。
-                </p>
+                <div className="font-semibold text-slate-950">{sourceLabel}</div>
+                <div className="mt-1 text-slate-500">Source</div>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:border-slate-300 hover:text-slate-950"
-                  onClick={() => setDraft(RECOMMENDED_SYSTEM_PROMPT_TEMPLATE)}
-                >
-                  <Sparkles size={15} />
-                  推荐模板
-                </button>
-                <button className="flex h-10 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm text-white hover:bg-slate-800 disabled:opacity-60" disabled={saving || !dirty} onClick={save}>
-                  {saving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
-                  保存
-                </button>
+              <div>
+                <div className="font-semibold text-slate-950">{passedChecks}/{qualityChecks.length}</div>
+                <div className="mt-1 text-slate-500">Health</div>
+              </div>
+              <div>
+                <div className="font-semibold text-slate-950">{prompt?.effectivePrompts.length ?? 0}</div>
+                <div className="mt-1 text-slate-500">Previews</div>
+              </div>
+              <div>
+                <div className="font-semibold text-slate-950">{draftStats.chars}</div>
+                <div className="mt-1 text-slate-500">Chars</div>
               </div>
             </div>
-            {error && <div className="px-5 pt-4"><InlineError text={error} /></div>}
-            <div className="p-5">
-              <textarea
-                className="min-h-[520px] w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-4 font-mono text-sm leading-6 outline-none transition focus:border-teal-700 focus:bg-white focus:ring-4 focus:ring-teal-700/10"
-                value={draft}
-                onChange={event => setDraft(event.target.value)}
-                placeholder="输入系统提示词"
-              />
-            </div>
-          </section>
+          </div>
+        </section>
 
-          <aside className="space-y-4">
-            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/30">
-              <div className="mb-4 flex items-start gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
-                  <ShieldCheck size={19} />
-                </div>
+        <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-100 p-1">
+          {tabs.map(tab => (
+            <button
+              key={tab.key}
+              className={cn('h-9 rounded-md px-3 text-sm font-medium transition', activeTab === tab.key ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800')}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'behavior' && (
+          <div className="grid grid-cols-2 gap-4">
+            <SettingsPolicyCard title="Knowledge first" status="Enabled" description="The agent searches selected vaults before forming an answer." />
+            <SettingsPolicyCard title="Answer language" status="Chinese by default" description="Technical terms can remain in English when that is clearer." />
+            <SettingsPolicyCard title="Answer structure" status="Conclusion first" description="Long answers prefer concise sections and bullet points." />
+            <SettingsPolicyCard title="Multi-vault reasoning" status="Separated evidence" description="When multiple vaults are selected, evidence should remain attributable to each vault." />
+          </div>
+        )}
+
+        {activeTab === 'sources' && (
+          <div className="grid grid-cols-2 gap-4">
+            <SettingsPolicyCard title="Required citations" status="Recommended" description="Core claims should include source paths from the knowledge base." />
+            <SettingsPolicyCard title="No fabricated sources" status="Enabled" description="The agent should not invent source paths or treat search titles as facts." />
+            <SettingsPolicyCard title="Runtime previews" status={(prompt?.effectivePrompts.length ?? 0) + ' vaults'} description="Each enabled vault receives a runtime prompt assembled from the base policy." />
+            <SettingsPolicyCard title="Source format" status="Path-based" description="Preferred answer format keeps source paths readable and traceable." />
+          </div>
+        )}
+
+        {activeTab === 'safety' && (
+          <div className="grid grid-cols-2 gap-4">
+            <SettingsPolicyCard title="Weak evidence" status="Say uncertain" description="When the knowledge base is insufficient, the assistant should say so directly." />
+            <SettingsPolicyCard title="High-stakes topics" status="Careful answers" description="Medical, legal, and financial answers should avoid overconfident guidance." />
+            <SettingsPolicyCard title="Scope boundary" status="Knowledge-scoped" description="The agent should not present missing knowledge-base content as confirmed fact." />
+            <SettingsPolicyCard title="Prompt health" status={passedChecks + '/' + qualityChecks.length + ' checks'} description="These checks are heuristics for the advanced base prompt." tone={passedChecks === qualityChecks.length ? 'good' : 'warn'} />
+          </div>
+        )}
+
+        {activeTab === 'advanced' && (
+          <div className="grid grid-cols-[minmax(0,1fr)_420px] gap-5">
+            <section className="rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/30">
+              <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
                 <div>
-                  <h2 className="text-base font-semibold">质量检查</h2>
-                  <p className="mt-1 text-sm leading-6 text-slate-500">保存前快速确认提示词是否覆盖团队问答的关键约束。</p>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-semibold">Base system prompt</h2>
+                    <SoftBadge tone={dirty ? 'warn' : 'good'}>{dirty ? 'Unsaved' : 'Synced'}</SoftBadge>
+                  </div>
+                  <p className="mt-1 text-sm leading-6 text-slate-500">
+                    Advanced editor for the raw policy passed to the Ask agent.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:border-slate-300 hover:text-slate-950"
+                    onClick={() => setDraft(RECOMMENDED_SYSTEM_PROMPT_TEMPLATE)}
+                  >
+                    <Sparkles size={15} />
+                    Template
+                  </button>
+                  <button className="flex h-10 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm text-white hover:bg-slate-800 disabled:opacity-60" disabled={saving || !dirty} onClick={save}>
+                    {saving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+                    Save
+                  </button>
                 </div>
               </div>
-              <div className="space-y-2">
-                {qualityChecks.map(item => (
-                  <div key={item.label} className="flex gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2.5">
-                    {item.ok ? <CheckCircle2 className="mt-0.5 text-emerald-600" size={16} /> : <CircleAlert className="mt-0.5 text-amber-600" size={16} />}
-                    <div>
-                      <div className="text-sm font-medium text-slate-800">{item.label}</div>
-                      <div className="mt-0.5 text-xs leading-5 text-slate-500">{item.description}</div>
-                    </div>
-                  </div>
-                ))}
+              {error && <div className="px-5 pt-4"><InlineError text={error} /></div>}
+              <div className="p-5">
+                <textarea
+                  className="min-h-[520px] w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-4 font-mono text-sm leading-6 outline-none transition focus:border-teal-700 focus:bg-white focus:ring-4 focus:ring-teal-700/10"
+                  value={draft}
+                  onChange={event => setDraft(event.target.value)}
+                  placeholder="Enter system prompt"
+                />
               </div>
             </section>
 
-            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/30">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-base font-semibold">生效预览</h2>
-                  <p className="mt-1 text-sm leading-6 text-slate-500">检查基础提示词与运行时知识库摘要的最终组合。</p>
+            <aside className="space-y-4">
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/30">
+                <div className="mb-4 flex items-start gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+                    <ShieldCheck size={19} />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-semibold">Quality checks</h2>
+                    <p className="mt-1 text-sm leading-6 text-slate-500">Quick heuristics before saving the advanced prompt.</p>
+                  </div>
                 </div>
-                <div className="flex rounded-md border border-slate-200 bg-slate-50 p-1">
-                  {(['runtime', 'base'] as const).map(mode => (
-                    <button
-                      key={mode}
-                      className={cn('h-8 rounded px-2.5 text-xs font-medium transition', previewMode === mode ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800')}
-                      onClick={() => setPreviewMode(mode)}
-                    >
-                      {mode === 'runtime' ? '运行时' : '基础'}
-                    </button>
+                <div className="space-y-2">
+                  {qualityChecks.map(item => (
+                    <div key={item.label} className="flex gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2.5">
+                      {item.ok ? <CheckCircle2 className="mt-0.5 text-emerald-600" size={16} /> : <CircleAlert className="mt-0.5 text-amber-600" size={16} />}
+                      <div>
+                        <div className="text-sm font-medium text-slate-800">{item.label}</div>
+                        <div className="mt-0.5 text-xs leading-5 text-slate-500">{item.description}</div>
+                      </div>
+                    </div>
                   ))}
                 </div>
-              </div>
-              {previewMode === 'runtime' && (
-                <div className="mt-4">
-                  <SelectField
-                    label="知识库"
-                    value={selectedPreview?.vaultId ?? ''}
-                    onChange={setSelectedVaultId}
-                    options={(prompt?.effectivePrompts ?? []).map(item => [item.vaultId, item.vaultName])}
-                  />
-                </div>
-              )}
-            </section>
+              </section>
 
-            <section className="max-h-[500px] overflow-auto rounded-xl border border-slate-200 bg-slate-950 p-4 text-slate-100 shadow-sm shadow-slate-200/30">
-              <pre className="whitespace-pre-wrap break-words text-xs leading-6">{previewText}</pre>
-            </section>
-          </aside>
-        </div>
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/30">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold">Preview</h2>
+                    <p className="mt-1 text-sm leading-6 text-slate-500">Inspect the base prompt or one runtime vault prompt.</p>
+                  </div>
+                  <div className="flex rounded-md border border-slate-200 bg-slate-50 p-1">
+                    {(['runtime', 'base'] as const).map(mode => (
+                      <button
+                        key={mode}
+                        className={cn('h-8 rounded px-2.5 text-xs font-medium transition', previewMode === mode ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800')}
+                        onClick={() => setPreviewMode(mode)}
+                      >
+                        {mode === 'runtime' ? 'Runtime' : 'Base'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {previewMode === 'runtime' && (
+                  <div className="mt-4">
+                    <SelectField
+                      label="Vault"
+                      value={selectedPreview?.vaultId ?? ''}
+                      onChange={setSelectedVaultId}
+                      options={(prompt?.effectivePrompts ?? []).map(item => [item.vaultId, item.vaultName])}
+                    />
+                  </div>
+                )}
+              </section>
+
+              <section className="max-h-[500px] overflow-auto rounded-xl border border-slate-200 bg-slate-950 p-4 text-slate-100 shadow-sm shadow-slate-200/30">
+                <pre className="whitespace-pre-wrap break-words text-xs leading-6">{previewText}</pre>
+              </section>
+            </aside>
+          </div>
+        )}
       </div>
     </AdminShell>
+  );
+}
+
+function SettingsPolicyCard({ title, status, description, tone = 'info' }: { title: string; status: string; description: string; tone?: 'good' | 'warn' | 'bad' | 'info' }) {
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/30">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold text-slate-950">{title}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-500">{description}</p>
+        </div>
+        <SoftBadge tone={tone}>{status}</SoftBadge>
+      </div>
+    </section>
   );
 }
 

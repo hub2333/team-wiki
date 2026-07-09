@@ -89,7 +89,19 @@ export interface Message {
   content: string;
   toolCalls?: string | ToolCall[];
   reasoningTrace?: ReasoningTrace;
+  metadata?: Record<string, unknown> & { usage?: ChatUsage };
+  usage?: ChatUsage;
   createdAt?: number;
+}
+
+export interface ChatUsage {
+  elapsedMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  estimatedInputTokens?: number;
+  estimatedOutputTokens?: number;
+  estimatedTotalTokens?: number;
 }
 
 export interface ToolCall {

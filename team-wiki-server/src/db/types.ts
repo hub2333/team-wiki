@@ -15,6 +15,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   toolCalls?: string;
+  metadata?: Record<string, unknown>;
   createdAt?: number;
 }
 

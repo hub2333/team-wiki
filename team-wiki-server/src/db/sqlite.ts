@@ -103,6 +103,7 @@ export class SqliteAdapter implements DbAdapter {
         role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
         content TEXT NOT NULL,
         tool_calls TEXT,
+        metadata TEXT DEFAULT '{}',
         created_at INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
@@ -129,6 +130,7 @@ export class SqliteAdapter implements DbAdapter {
 
     this.db = db;
     this.ensureColumn('sessions', 'vault_id', 'TEXT');
+    this.ensureColumn('messages', 'metadata', "TEXT DEFAULT '{}'");
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sessions_vault
         ON sessions(vault_id, updated_at);
@@ -197,9 +199,9 @@ export class SqliteAdapter implements DbAdapter {
     const now = msg.createdAt ?? Date.now();
 
     const result = db.prepare(`
-      INSERT INTO messages (session_id, role, content, tool_calls, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(msg.sessionId, msg.role, msg.content, msg.toolCalls ?? null, now) as {
+      INSERT INTO messages (session_id, role, content, tool_calls, metadata, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(msg.sessionId, msg.role, msg.content, msg.toolCalls ?? null, JSON.stringify(msg.metadata ?? {}), now) as {
       lastInsertRowid?: number | bigint;
     };
 
@@ -503,12 +505,14 @@ function mapSessionRow(row: any): Session {
 }
 
 function mapMessageRow(row: any): Message {
+  const metadata = JSON.parse(row.metadata || '{}');
   return {
     id: Number(row.id),
     sessionId: row.session_id,
     role: row.role,
     content: row.content,
     toolCalls: row.tool_calls ?? undefined,
+    metadata,
     createdAt: Number(row.created_at),
   };
 }

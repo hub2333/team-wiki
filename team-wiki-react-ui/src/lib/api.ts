@@ -48,6 +48,17 @@ export function getSession(token: string, sessionId: string) {
   return apiFetch<{ session: Session; messages: Message[] }>(`/api/sessions/${sessionId}`, token);
 }
 
+export function renameSession(token: string, sessionId: string, title: string) {
+  return apiFetch<{ session: Session }>(`/api/sessions/${sessionId}`, token, {
+    method: 'PUT',
+    body: JSON.stringify({ title }),
+  });
+}
+
+export function deleteSession(token: string, sessionId: string) {
+  return apiFetch<{ ok: boolean }>(`/api/sessions/${sessionId}`, token, { method: 'DELETE' });
+}
+
 export function getVaultStatus(token: string, vaultId: string) {
   return apiFetch<{ vault: unknown; status: VaultStatus | null; indexed: boolean }>(
     `/api/vaults/${vaultId}/status`,

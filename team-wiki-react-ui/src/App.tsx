@@ -29,12 +29,14 @@ import {
   Users,
   Pencil,
   X,
+  MoreHorizontal,
 } from 'lucide-react';
 import {
   createModel,
   createUser,
   createVault,
   deleteModel,
+  deleteSession,
   deleteUser,
   deleteVault,
   getMe,
@@ -51,6 +53,7 @@ import {
   listSessions,
   login,
   reindexVault,
+  renameSession,
   storeToken,
   testModel,
   updateModel,
@@ -60,7 +63,7 @@ import {
 } from './lib/api';
 import { streamChat, type ChatEvent } from './lib/sse';
 import { cn, compactNumber, formatTime, parseToolCalls } from './lib/utils';
-import type { AdminUser, Message, ModelConfig, Overview, ReasoningTrace, Session, SystemPromptResponse, ToolCall, UsageSummary, User, Vault } from './types';
+import type { AdminUser, ChatUsage, Message, ModelConfig, Overview, ReasoningTrace, Session, SystemPromptResponse, ToolCall, UsageSummary, User, Vault } from './types';
 
 type ViewKey = 'ask' | 'knowledge' | 'people' | 'models' | 'agents' | 'insights' | 'settings';
 
@@ -336,6 +339,20 @@ export default function App() {
     }
   }
 
+  async function renameChatSession(sessionId: string, title: string) {
+    await renameSession(token, sessionId, title);
+    await queryClient.invalidateQueries({ queryKey: ['sessions', token] });
+  }
+
+  async function deleteChatSessions(sessionIds: string[]) {
+    if (!sessionIds.length) return;
+    await Promise.all(sessionIds.map(sessionId => deleteSession(token, sessionId)));
+    if (currentSessionId && sessionIds.includes(currentSessionId)) {
+      startNewSession();
+    }
+    await queryClient.invalidateQueries({ queryKey: ['sessions', token] });
+  }
+
   async function sendMessage(preset?: string) {
     const text = (preset ?? input).trim();
     if (!text || !activeVaultIds.length || isStreaming) return;
@@ -365,6 +382,7 @@ export default function App() {
       let fullText = '';
       let fullToolEvents: ToolCall[] = [];
       let finalReasoningTrace = emptyReasoningTrace();
+      let finalUsage: ChatUsage | undefined;
       await streamChat(
         token,
         { message: text, vaultIds: activeVaultIds, sessionId: currentSessionId, modelId: selectedModel.id },
@@ -402,6 +420,7 @@ export default function App() {
           if (event.type === 'done') {
             finalSessionId = event.sessionId ?? finalSessionId;
             if (event.sessionId) setCurrentSessionId(event.sessionId);
+            if (event.usage) finalUsage = event.usage;
             if (event.model) setLastUsedModel(event.model as ModelConfig);
           }
           if (event.type === 'error') {
@@ -410,7 +429,7 @@ export default function App() {
         },
       );
 
-      setMessages(prev => [...prev, { role: 'assistant', content: fullText, toolCalls: fullToolEvents, reasoningTrace: finalReasoningTrace }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: fullText, toolCalls: fullToolEvents, reasoningTrace: finalReasoningTrace, usage: finalUsage, metadata: finalUsage ? { usage: finalUsage } : undefined }]);
       if (finalSessionId) setCurrentSessionId(finalSessionId);
       await queryClient.invalidateQueries({ queryKey: ['sessions', token] });
     } catch (err) {
@@ -502,6 +521,8 @@ export default function App() {
             currentSessionId={currentSessionId}
             onOpenSession={openSession}
             onNewSession={startNewSession}
+            onRenameSession={renameChatSession}
+            onDeleteSessions={deleteChatSessions}
             input={input}
             setInput={setInput}
             sendMessage={sendMessage}
@@ -724,6 +745,8 @@ function AskWorkspace(props: {
   currentSessionId: string | null;
   onOpenSession: (sessionId: string) => void;
   onNewSession: () => void;
+  onRenameSession: (sessionId: string, title: string) => Promise<void>;
+  onDeleteSessions: (sessionIds: string[]) => Promise<void>;
   input: string;
   setInput: (value: string) => void;
   sendMessage: (preset?: string) => void;
@@ -734,18 +757,66 @@ function AskWorkspace(props: {
 }) {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const [sessionFilter, setSessionFilter] = useState('');
+  const [sessionMenuId, setSessionMenuId] = useState<string | null>(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
+  const [renamingSession, setRenamingSession] = useState<Session | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const selectedTitle = props.currentSessionId
     ? props.sessions.find(session => session.id === props.currentSessionId)?.title || 'Ask'
     : 'New chat';
   const scopeText = props.selectedVaults.length
     ? 'Scope: ' + props.selectedVaults.length + ' vaults'
     : 'Scope not set';
-  const displayModel = props.lastUsedModel ?? props.selectedModel;
   const modelReady = Boolean(props.selectedModel?.hasApiKey);
   const filteredSessions = props.sessions.filter(session =>
     ((session.title || '') + ' ' + scopeLabelForSession(session, props.vaults)).toLowerCase().includes(sessionFilter.toLowerCase()),
   );
   const sessionGroups = groupSessionsByTime(filteredSessions);
+  const selectedSessionSet = new Set(selectedSessionIds);
+
+  function toggleBulkMode() {
+    setBulkMode(prev => !prev);
+    setSelectedSessionIds([]);
+    setSessionMenuId(null);
+  }
+
+  function toggleSessionSelected(sessionId: string) {
+    setSelectedSessionIds(prev => prev.includes(sessionId) ? prev.filter(id => id !== sessionId) : [...prev, sessionId]);
+  }
+
+  async function deleteSessionsWithConfirm(sessionIds: string[]) {
+    if (!sessionIds.length) return;
+    if (!window.confirm(sessionIds.length === 1 ? 'Delete this chat?' : `Delete ${sessionIds.length} chats?`)) return;
+    setSessionActionBusy(true);
+    try {
+      await props.onDeleteSessions(sessionIds);
+      setSelectedSessionIds([]);
+      setBulkMode(false);
+      setSessionMenuId(null);
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
+  function startRenameSession(session: Session) {
+    setRenamingSession(session);
+    setRenameDraft(session.title || 'New Chat');
+    setSessionMenuId(null);
+  }
+
+  async function saveRenamedSession() {
+    if (!renamingSession || !renameDraft.trim()) return;
+    setSessionActionBusy(true);
+    try {
+      await props.onRenameSession(renamingSession.id, renameDraft.trim());
+      setRenamingSession(null);
+      setRenameDraft('');
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
 
   useEffect(() => {
     const container = chatScrollRef.current;
@@ -766,10 +837,28 @@ function AskWorkspace(props: {
   return (
     <main className="grid min-h-0 grid-cols-[300px_minmax(0,1fr)]">
       <section className="flex min-h-0 flex-col border-r border-slate-200/80 bg-white/70 p-4">
-        <button className="mb-3 flex h-10 items-center justify-center gap-2 rounded-md bg-slate-950 text-sm font-medium text-white hover:bg-slate-800" onClick={props.onNewSession}>
-          <MessageSquareText size={16} />
-          New chat
-        </button>
+        <div className="mb-3 grid grid-cols-[minmax(0,1fr)_44px] gap-2">
+          <button className="flex h-10 items-center justify-center gap-2 rounded-md bg-slate-950 text-sm font-medium text-white hover:bg-slate-800" onClick={props.onNewSession}>
+            <MessageSquareText size={16} />
+            New chat
+          </button>
+          <button
+            className={cn('flex h-10 items-center justify-center rounded-md border text-sm transition', bulkMode ? 'border-teal-600 bg-teal-50 text-teal-700' : 'border-slate-200 bg-white text-slate-600 hover:text-slate-950')}
+            title={bulkMode ? 'Exit selection' : 'Select chats'}
+            onClick={toggleBulkMode}
+          >
+            {bulkMode ? <X size={16} /> : <CheckCircle2 size={16} />}
+          </button>
+        </div>
+        {bulkMode && (
+          <div className="mb-3 flex items-center justify-between gap-2 rounded-md border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-800">
+            <span>{selectedSessionIds.length} selected</span>
+            <button className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-red-600 shadow-sm disabled:opacity-50" disabled={!selectedSessionIds.length || sessionActionBusy} onClick={() => deleteSessionsWithConfirm(selectedSessionIds)}>
+              {sessionActionBusy ? <Loader2 className="animate-spin" size={13} /> : <Trash2 size={13} />}
+              Delete
+            </button>
+          </div>
+        )}
 
         <label className="relative mb-4 block">
           <Search className="pointer-events-none absolute left-3 top-2.5 text-slate-400" size={15} />
@@ -791,22 +880,58 @@ function AskWorkspace(props: {
             <div key={group.label} className="mb-5">
               <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{group.label}</div>
               <div className="space-y-1.5">
-                {group.sessions.map(session => (
-                  <button
-                    key={session.id}
-                    className={cn(
-                      'group w-full rounded-md border px-3 py-2.5 text-left transition',
-                      props.currentSessionId === session.id ? 'border-teal-600 bg-teal-50' : 'border-transparent bg-white/60 hover:border-slate-200 hover:bg-white',
-                    )}
-                    onClick={() => props.onOpenSession(session.id)}
-                  >
-                    <div className="truncate text-sm font-medium text-slate-800">{session.title || 'New Chat'}</div>
-                    <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                      <span className="truncate">{scopeLabelForSession(session, props.vaults)}</span>
-                      <span className="shrink-0">{formatTime(session.updatedAt)}</span>
+                {group.sessions.map(session => {
+                  const selected = selectedSessionSet.has(session.id);
+                  return (
+                    <div key={session.id} className="relative">
+                      <button
+                        className={cn(
+                          'group w-full rounded-md border px-3 py-2.5 pr-9 text-left transition',
+                          props.currentSessionId === session.id ? 'border-teal-600 bg-teal-50' : 'border-transparent bg-white/60 hover:border-slate-200 hover:bg-white',
+                          bulkMode && selected && 'border-teal-600 bg-teal-50',
+                        )}
+                        onClick={() => bulkMode ? toggleSessionSelected(session.id) : props.onOpenSession(session.id)}
+                      >
+                        <div className="flex items-center gap-2">
+                          {bulkMode && (
+                            <span className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded border', selected ? 'border-teal-600 bg-teal-600 text-white' : 'border-slate-300 bg-white text-transparent')}>
+                              <CheckCircle2 size={11} />
+                            </span>
+                          )}
+                          <span className="truncate text-sm font-medium text-slate-800">{session.title || 'New Chat'}</span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                          <span className="truncate">{scopeLabelForSession(session, props.vaults)}</span>
+                          <span className="shrink-0">{formatTime(session.updatedAt)}</span>
+                        </div>
+                      </button>
+                      {!bulkMode && (
+                        <button
+                          className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus:bg-slate-100 focus:text-slate-700"
+                          aria-label="Chat actions"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSessionMenuId(prev => prev === session.id ? null : session.id);
+                          }}
+                        >
+                          <MoreHorizontal size={16} />
+                        </button>
+                      )}
+                      {sessionMenuId === session.id && (
+                        <div className="absolute right-2 top-9 z-20 w-36 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg shadow-slate-950/10">
+                          <button className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50" onClick={() => startRenameSession(session)}>
+                            <Pencil size={14} />
+                            Rename
+                          </button>
+                          <button className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50" onClick={() => deleteSessionsWithConfirm([session.id])}>
+                            <Trash2 size={14} />
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -816,6 +941,18 @@ function AskWorkspace(props: {
         </div>
       </section>
 
+      {renamingSession && (
+        <AdminModal open title="Rename chat" description="Update the chat title shown in the sidebar." onClose={() => setRenamingSession(null)}>
+          <div className="space-y-4">
+            <Field label="Title" value={renameDraft} onChange={setRenameDraft} />
+            <button className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-950 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60" disabled={!renameDraft.trim() || sessionActionBusy} onClick={saveRenamedSession}>
+              {sessionActionBusy ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+              Save title
+            </button>
+          </div>
+        </AdminModal>
+      )}
+
       <section className="flex min-h-0 flex-col bg-slate-50/45">
         <header className="border-b border-slate-200/70 bg-white/68 px-8 py-4 backdrop-blur">
           <div className="mx-auto flex max-w-[880px] items-center justify-between gap-6">
@@ -824,27 +961,15 @@ function AskWorkspace(props: {
               <p className="mt-1 text-sm text-slate-500">{scopeText}</p>
             </div>
             <div className="flex shrink-0 items-center gap-3">
-              <label className="flex min-w-[260px] items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm shadow-slate-200/30">
-                <BrainCircuit size={15} className="text-teal-700" />
-                <span className="shrink-0 font-medium text-slate-700">Model</span>
-                <select
-                  className="min-w-0 flex-1 bg-transparent text-slate-900 outline-none disabled:text-slate-400"
-                  value={props.selectedModelId}
-                  disabled={props.isStreaming || props.modelsLoading || !props.models.length}
-                  onChange={event => props.onSelectModel(event.target.value)}
-                >
-                  {props.models.map(model => (
-                    <option key={model.id} value={model.id}>
-                      {model.name} · {model.model}{model.hasApiKey ? '' : ' · Missing key'}
-                    </option>
-                  ))}
-                </select>
-                {props.modelsLoading && <Loader2 className="shrink-0 animate-spin text-slate-400" size={14} />}
-              </label>
-              <div className="flex max-w-[220px] items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500">
-                <Network size={14} className="shrink-0" />
-                <span className="truncate">{displayModel ? `Using ${displayModel.model}` : props.user?.role === 'admin' ? 'Full access' : 'Scoped access'}</span>
-              </div>
+              <ModelPicker
+                models={props.models}
+                selectedModel={props.selectedModel}
+                selectedModelId={props.selectedModelId}
+                disabled={props.isStreaming || props.modelsLoading || !props.models.length}
+                loading={props.modelsLoading}
+                onSelect={props.onSelectModel}
+              />
+
             </div>
           </div>
         </header>
@@ -917,6 +1042,97 @@ function AskWorkspace(props: {
     </main>
   );
 }
+function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading, onSelect }: {
+  models: ModelConfig[];
+  selectedModel: ModelConfig | null;
+  selectedModelId: string;
+  disabled: boolean;
+  loading: boolean;
+  onSelect: (modelId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const activeModel = selectedModel ?? models.find(model => model.id === selectedModelId) ?? models[0] ?? null;
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  return (
+    <div className="relative w-[340px] shrink-0">
+      <button
+        type="button"
+        className={cn(
+          'flex h-12 w-full items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 text-left shadow-sm shadow-slate-200/40 transition hover:border-teal-200 hover:bg-teal-50/30 disabled:cursor-not-allowed disabled:opacity-60',
+          open && 'border-teal-300 ring-4 ring-teal-700/10',
+        )}
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen(prev => !prev)}
+      >
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-teal-50 text-teal-700">
+          {loading ? <Loader2 className="animate-spin" size={16} /> : <BrainCircuit size={16} />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="truncate text-sm font-semibold text-slate-900">{activeModel?.name || 'No model'}</span>
+            {activeModel?.isDefault && <span className="rounded-full bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-700">Default</span>}
+          </span>
+          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-slate-500">
+            <span className="truncate">{activeModel ? getProviderName(activeModel.baseUrl) : 'Not configured'}</span>
+            {activeModel && <span className="text-slate-300">/</span>}
+            {activeModel && <span className="truncate font-mono">{activeModel.model}</span>}
+          </span>
+        </span>
+        <span className={cn('shrink-0 text-xs', activeModel?.hasApiKey ? 'text-emerald-600' : 'text-amber-600')}>
+          {activeModel?.hasApiKey ? 'Ready' : 'Key missing'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 z-30 mt-2 w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl shadow-slate-950/12" role="listbox">
+          <div className="border-b border-slate-100 px-3 py-2 text-[11px] font-semibold uppercase text-slate-400">Model routes</div>
+          <div className="max-h-72 overflow-auto p-1.5">
+            {models.map(model => {
+              const selected = model.id === selectedModelId;
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  className={cn(
+                    'flex w-full items-start gap-3 rounded-md px-2.5 py-2 text-left transition hover:bg-slate-50',
+                    selected && 'bg-teal-50',
+                  )}
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => {
+                    onSelect(model.id);
+                    setOpen(false);
+                  }}
+                >
+                  <span className={cn('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border', selected ? 'border-teal-600 bg-teal-600 text-white' : 'border-slate-200 text-transparent')}>
+                    <CheckCircle2 size={13} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-slate-900">{model.name}</span>
+                      {model.isDefault && <SoftBadge tone="info">Default</SoftBadge>}
+                    </span>
+                    <span className="mt-1 block truncate text-xs text-slate-500">{getProviderName(model.baseUrl)} / {model.model}</span>
+                  </span>
+                  <span className={cn('mt-0.5 rounded-full px-2 py-0.5 text-[11px]', model.hasApiKey ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700')}>
+                    {model.hasApiKey ? 'Ready' : 'Missing key'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MarkdownContent({ children }: { children: string }) {
   return (
     <div className="chat-prose">
@@ -1036,6 +1252,7 @@ function reasoningStatusClass(status: ReasoningTrace['lanes'][number]['status'])
 function ChatBubble({ message }: { message: Message }) {
   const isUser = message.role === 'user';
   const calls = parseToolCalls(message.toolCalls);
+  const usage = getMessageUsage(message);
   return (
     <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
       <div className={cn(
@@ -1046,12 +1263,61 @@ function ChatBubble({ message }: { message: Message }) {
       )}>
         {!isUser && message.reasoningTrace && <ReasoningSummary trace={message.reasoningTrace} />}
         {isUser ? <p>{message.content}</p> : <MarkdownContent>{message.content}</MarkdownContent>}
-        {!isUser && calls.length > 0 && (
-          <div className="mt-3 inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">检索 {calls.length} 次</div>
+        {!isUser && (calls.length > 0 || usage) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            {calls.length > 0 && <span className="rounded-full bg-slate-100 px-2 py-1">Searches {calls.length}</span>}
+            {usage && <UsagePill usage={usage} />}
+          </div>
         )}
       </div>
     </div>
   );
+}
+
+function UsagePill({ usage }: { usage: ChatUsage }) {
+  const inputTokens = usage.inputTokens ?? usage.estimatedInputTokens;
+  const outputTokens = usage.outputTokens ?? usage.estimatedOutputTokens;
+  const items = [
+    typeof inputTokens === 'number' ? ['input', formatTokenCount(inputTokens)] : null,
+    typeof outputTokens === 'number' ? ['output', formatTokenCount(outputTokens)] : null,
+    typeof usage.elapsedMs === 'number' ? ['cost', formatCost(usage.elapsedMs)] : null,
+  ].filter(Boolean) as Array<[string, string]>;
+
+  return (
+    <span className="inline-flex flex-wrap items-center overflow-hidden rounded-full border border-teal-100 bg-teal-50 text-xs text-teal-800">
+      {items.map(([label, value], index) => (
+        <span key={label} className={cn('px-2 py-1', index > 0 && 'border-l border-teal-200/80')}>
+          <span className="text-teal-600">{label}</span> {value}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function getMessageUsage(message: Message): ChatUsage | undefined {
+  const usage = message.usage ?? message.metadata?.usage;
+  if (!usage || typeof usage !== 'object') return undefined;
+  return usage;
+}
+
+function formatTokenCount(tokens: number) {
+  if (tokens >= 1_000_000) return formatMetric(tokens / 1_000_000) + ' M token';
+  if (tokens >= 1_000) return formatMetric(tokens / 1_000) + ' K token';
+  return String(Math.max(0, Math.round(tokens))) + ' token';
+}
+
+function formatMetric(value: number) {
+  if (value >= 100) return String(Math.round(value));
+  if (value >= 10) return value.toFixed(1).replace(/\.0$/, '');
+  return value.toFixed(2).replace(/0$/, '').replace(/\.0$/, '');
+}
+
+function formatCost(ms: number) {
+  if (ms < 1000) return String(Math.max(0, Math.round(ms))) + 'ms';
+  if (ms < 60_000) return String(Math.round(ms / 1000)) + 's';
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return String(minutes) + 'm ' + String(seconds) + 's';
 }
 
 function KnowledgePage({ token, vaults, loading, onChanged }: { token: string; vaults: Vault[]; loading: boolean; onChanged: () => Promise<void> }) {
@@ -1489,12 +1755,12 @@ function ModelsPage({ token, models, loading, onChanged }: { token: string; mode
     <AdminShell
       icon={BrainCircuit}
       title="Models"
-      description="配置默认模型和 OpenAI-compatible API。模型 Key 不会在前端回显。"
+      description="Manage model routes, provider endpoints, API keys, and the default model used by Ask."
       action={<RefreshButton loading={loading} onClick={onChanged} />}
     >
-      <div className="space-y-4">
+      <div className="space-y-5">
         <AdminStatsBar items={[
-          { label: 'Total', value: models.length, hint: 'configs' },
+          { label: 'Total', value: models.length, hint: 'model routes' },
           { label: 'Enabled', value: models.filter(model => model.enabled).length, tone: 'good' },
           { label: 'Default', value: models.find(model => model.isDefault)?.model || '-', hint: models.find(model => model.isDefault)?.name },
           { label: 'Missing keys', value: models.filter(model => !model.hasApiKey).length, tone: models.some(model => !model.hasApiKey) ? 'warn' : 'good' },
@@ -1503,83 +1769,94 @@ function ModelsPage({ token, models, loading, onChanged }: { token: string; mode
         <ResourceToolbar
           search={filter}
           onSearch={setFilter}
-          placeholder="按名称、Base URL、模型名过滤"
+          placeholder="Filter by name, base URL, or model"
           action={<PrimaryActionButton onClick={openCreate}>Add model</PrimaryActionButton>}
         />
 
-        {testResult && <div className="rounded-md border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm shadow-slate-200/30">{testResult}</div>}
-
-        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/30">
-          <div className="grid grid-cols-[minmax(240px,1fr)_180px_120px_120px_230px] gap-4 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-            <div>Model route</div>
-            <div>Provider</div>
-            <div>Status</div>
-            <div>Key</div>
-            <div className="text-right">Actions</div>
+        {testResult && (
+          <div className="flex items-start gap-3 rounded-lg border border-teal-100 bg-teal-50 px-4 py-3 text-sm text-teal-800 shadow-sm shadow-teal-900/5">
+            <Activity className="mt-0.5 shrink-0" size={16} />
+            <span className="min-w-0 break-words">{testResult}</span>
           </div>
-          {visibleModels.map(model => (
-            <ModelRow
-              key={model.id}
-              model={model}
-              saving={saving}
-              onEdit={() => openEdit(model)}
-              onDelete={async () => {
-                if (!window.confirm(`删除模型配置「${model.name}」？`)) return;
-                setSaving(`delete:${model.id}`);
-                setError('');
-                try {
-                  await deleteModel(token, model.id);
-                  await onChanged();
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : '删除模型失败');
-                } finally {
-                  setSaving('');
-                }
-              }}
-              onTest={async () => {
-                setSaving(`test:${model.id}`);
-                setError('');
-                setTestResult('');
-                try {
-                  const result = await testModel(token, model.id);
-                  const latency = typeof result.latencyMs === 'number' ? ` (${result.latencyMs}ms)` : '';
-                  setTestResult(`${model.name}: ${result.ok ? 'OK' : 'Failed'}${latency} - ${result.message}`);
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : '测试模型失败');
-                } finally {
-                  setSaving('');
-                }
-              }}
-            />
-          ))}
-          {!visibleModels.length && <div className="p-6"><EmptyPanel text={models.length ? '没有匹配的模型配置。' : '还没有模型配置。'} /></div>}
+        )}
+
+        <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm shadow-slate-200/40">
+          <div className="mb-3 flex items-center justify-between gap-3 px-1">
+            <div>
+              <div className="text-sm font-semibold text-slate-900">Configured routes</div>
+              <div className="mt-1 text-xs text-slate-500">One route can be marked as default for Ask sessions.</div>
+            </div>
+            <div className="text-xs text-slate-500">{visibleModels.length} shown</div>
+          </div>
+          <div className="grid gap-3">
+            {visibleModels.map(model => (
+              <ModelRow
+                key={model.id}
+                model={model}
+                saving={saving}
+                onEdit={() => openEdit(model)}
+                onDelete={async () => {
+                  if (!window.confirm(`Delete model config "${model.name}"?`)) return;
+                  setSaving(`delete:${model.id}`);
+                  setError('');
+                  try {
+                    await deleteModel(token, model.id);
+                    await onChanged();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'Delete model failed');
+                  } finally {
+                    setSaving('');
+                  }
+                }}
+                onTest={async () => {
+                  setSaving(`test:${model.id}`);
+                  setError('');
+                  setTestResult('');
+                  try {
+                    const result = await testModel(token, model.id);
+                    const latency = typeof result.latencyMs === 'number' ? ` (${result.latencyMs}ms)` : '';
+                    setTestResult(`${model.name}: ${result.ok ? 'OK' : 'Failed'}${latency} - ${result.message}`);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'Test model failed');
+                  } finally {
+                    setSaving('');
+                  }
+                }}
+              />
+            ))}
+            {!visibleModels.length && <EmptyPanel text={models.length ? 'No model config matches the filter.' : 'No model configs yet.'} />}
+          </div>
         </section>
         {error && !drawerMode && <InlineError text={error} />}
       </div>
 
       <AdminModal
         open={Boolean(drawerMode)}
-        title={drawerMode === 'edit' ? '编辑模型' : '新增模型'}
-        description="支持 DeepSeek、OpenAI 或兼容 OpenAI API 的服务。"
+        title={drawerMode === 'edit' ? 'Edit model route' : 'Add model route'}
+        description="Use any OpenAI-compatible endpoint. API keys are never shown after saving."
         onClose={closeDrawer}
       >
-        <div className="space-y-4">
-          <Field label="名称" value={draft.name} onChange={value => setDraft(prev => ({ ...prev, name: value }))} placeholder="Default DeepSeek" />
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Display name" value={draft.name} onChange={value => setDraft(prev => ({ ...prev, name: value }))} placeholder="Default DeepSeek" />
+            <Field label="Model" value={draft.model} onChange={value => setDraft(prev => ({ ...prev, model: value }))} />
+          </div>
           <Field label="Base URL" value={draft.baseUrl} onChange={value => setDraft(prev => ({ ...prev, baseUrl: value }))} />
-          <Field label="Model" value={draft.model} onChange={value => setDraft(prev => ({ ...prev, model: value }))} />
-          <Field label="API Key" value={draft.apiKey} onChange={value => setDraft(prev => ({ ...prev, apiKey: value }))} type="password" placeholder={editingModel?.hasApiKey ? '已配置，留空不改' : undefined} />
-          <label className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-            <span>启用模型</span>
-            <input type="checkbox" checked={draft.enabled} onChange={event => setDraft(prev => ({ ...prev, enabled: event.target.checked }))} />
-          </label>
-          <label className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-            <span>设为默认</span>
-            <input type="checkbox" checked={draft.isDefault} onChange={event => setDraft(prev => ({ ...prev, isDefault: event.target.checked }))} />
-          </label>
+          <Field label="API Key" value={draft.apiKey} onChange={value => setDraft(prev => ({ ...prev, apiKey: value }))} type="password" placeholder={editingModel?.hasApiKey ? 'Configured. Leave blank to keep current key.' : undefined} />
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700">
+              <span>Enabled</span>
+              <input type="checkbox" checked={draft.enabled} onChange={event => setDraft(prev => ({ ...prev, enabled: event.target.checked }))} />
+            </label>
+            <label className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700">
+              <span>Default</span>
+              <input type="checkbox" checked={draft.isDefault} onChange={event => setDraft(prev => ({ ...prev, isDefault: event.target.checked }))} />
+            </label>
+          </div>
           {error && <InlineError text={error} />}
-          <button className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-950 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60" disabled={Boolean(saving)} onClick={saveModel}>
+          <button className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-slate-950 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60" disabled={Boolean(saving)} onClick={saveModel}>
             {saving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
-            保存模型
+            Save model
           </button>
         </div>
       </AdminModal>
@@ -1595,45 +1872,80 @@ function ModelRow({ model, saving, onEdit, onDelete, onTest }: {
   onTest: () => Promise<void>;
 }) {
   const busy = saving.endsWith(`:${model.id}`);
+  const provider = getProviderName(model.baseUrl);
 
   return (
-    <div className="grid grid-cols-[minmax(240px,1fr)_180px_120px_120px_230px] items-center gap-4 border-b border-slate-100 px-4 py-3 last:border-b-0">
+    <article className={cn(
+      'group grid grid-cols-[minmax(0,1fr)_auto] gap-4 rounded-lg border bg-white p-4 transition hover:border-teal-200 hover:shadow-md hover:shadow-slate-200/50',
+      model.isDefault ? 'border-teal-200 ring-1 ring-teal-100' : 'border-slate-200',
+      !model.enabled && 'bg-slate-50/70',
+    )}>
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <div className="truncate text-sm font-semibold text-slate-900">{model.name}</div>
-          {model.isDefault && <SoftBadge tone="info">Default</SoftBadge>}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700">
+            <BrainCircuit size={17} />
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="truncate text-sm font-semibold text-slate-950">{model.name}</h3>
+              {model.isDefault && <SoftBadge tone="info">Default</SoftBadge>}
+              <SoftBadge tone={model.enabled ? 'good' : 'neutral'}>{model.enabled ? 'Enabled' : 'Disabled'}</SoftBadge>
+              <SoftBadge tone={model.hasApiKey ? 'good' : 'warn'}>{model.hasApiKey ? 'Key ready' : 'Missing key'}</SoftBadge>
+            </div>
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+              <span className="font-medium text-slate-700">{model.model}</span>
+              <span className="text-slate-300">/</span>
+              <span>{provider}</span>
+            </div>
+          </div>
         </div>
-        <div className="mt-1 truncate text-xs text-slate-500">{model.model}</div>
+
+        <div className="mt-4 grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
+          <div className="flex items-center gap-1.5 font-medium text-slate-500"><Network size={13} /> Endpoint</div>
+          <div className="min-w-0 truncate font-mono text-slate-700">{model.baseUrl}</div>
+          <div className="flex items-center gap-1.5 font-medium text-slate-500"><KeyRound size={13} /> Secret</div>
+          <div className={cn('min-w-0 truncate', model.hasApiKey ? 'text-emerald-700' : 'text-amber-700')}>{model.hasApiKey ? 'API key configured' : 'Add an API key before using this route'}</div>
+        </div>
       </div>
-      <div className="truncate text-sm text-slate-600">{model.baseUrl}</div>
-      <div><SoftBadge tone={model.enabled ? 'good' : 'neutral'}>{model.enabled ? 'Enabled' : 'Disabled'}</SoftBadge></div>
-      <div><SoftBadge tone={model.hasApiKey ? 'good' : 'warn'}>{model.hasApiKey ? 'Configured' : 'Missing'}</SoftBadge></div>
-      <div className="flex justify-end gap-2">
-        <button className="flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-60" disabled={busy} onClick={onTest}>
-          <Activity size={15} />
+
+      <div className="flex shrink-0 items-start gap-2">
+        <button className="flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-60" disabled={busy} onClick={onTest}>
+          {saving === `test:${model.id}` ? <Loader2 className="animate-spin" size={15} /> : <Activity size={15} />}
           Test
         </button>
         <button className="flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50" onClick={onEdit}>
           <Pencil size={15} />
           Edit
         </button>
-        <button className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-60" disabled={busy} onClick={onDelete}>
-          {busy ? <Loader2 className="animate-spin" size={15} /> : <Trash2 size={15} />}
+        <button className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-60" disabled={busy} onClick={onDelete} aria-label="Delete model">
+          {saving === `delete:${model.id}` ? <Loader2 className="animate-spin" size={15} /> : <Trash2 size={15} />}
         </button>
       </div>
-    </div>
+    </article>
   );
 }
 
+function getProviderName(baseUrl: string) {
+  const lower = baseUrl.toLowerCase();
+  if (lower.includes('deepseek')) return 'DeepSeek';
+  if (lower.includes('openai')) return 'OpenAI';
+  if (lower.includes('localhost') || lower.includes('127.0.0.1')) return 'Local';
+  try {
+    return new URL(baseUrl).hostname.replace(/^api\./, '');
+  } catch {
+    return 'Custom provider';
+  }
+}
+
 function InsightsPage({ overview, usage, vaults, models, users }: { overview?: Overview; usage?: UsageSummary; vaults: Vault[]; models: ModelConfig[]; users: AdminUser[] }) {
-  const vaultName = (vaultId: string | null) => vaults.find(vault => vault.id === vaultId)?.name || '(unknown)';
+  const vaultById = (vaultId: string | null) => vaultId ? vaults.find(vault => vault.id === vaultId) ?? null : null;
   return (
     <AdminShell icon={Gauge} title="Insights" description="基础运行概览。后续会接入问答次数、token 用量和用户排行。">
       <div className="grid grid-cols-4 gap-4">
         <InfoPanel label="Users" value={overview?.users ?? users.length} />
         <InfoPanel label="Active users" value={overview?.activeUsers ?? users.filter(user => user.status === 'active').length} />
         <InfoPanel label="Questions" value={usage?.totalQuestions ?? 0} />
-        <InfoPanel label="Tokens" value={compactNumber(usage?.totalTokens)} />
+        <InfoPanel label="Tokens" value={formatTokenCount(usage?.totalTokens ?? 0)} />
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-5">
@@ -1655,15 +1967,29 @@ function InsightsPage({ overview, usage, vaults, models, users }: { overview?: O
         <section className="rounded-xl border border-slate-200 bg-white p-5">
           <h2 className="text-base font-semibold">Usage by vault</h2>
           <div className="mt-4 space-y-3">
-            {(usage?.byVault ?? []).map(item => (
-              <div key={item.vaultId || 'none'} className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-                <div>
-                  <div className="text-sm font-medium">{vaultName(item.vaultId)}</div>
-                  <div className="text-xs text-slate-500">{compactNumber(item.totalTokens)} tokens</div>
+            {(usage?.byVault ?? []).map(item => {
+              const vault = vaultById(item.vaultId);
+              const unlinked = !vault;
+              return (
+                <div key={item.vaultId || 'none'} className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 text-sm font-medium">
+                      <span className="truncate">{vault?.name || 'Unlinked vault'}</span>
+                      {unlinked && (
+                        <span
+                          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-200 bg-amber-50 text-[10px] font-semibold text-amber-700"
+                          title="This usage record points to a vault that no longer exists, was deleted, or is not available in the current vault configuration."
+                        >
+                          ?
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-500">{formatTokenCount(item.totalTokens)}</div>
+                  </div>
+                  <span className="rounded-full bg-teal-50 px-2 py-1 text-xs text-teal-700">{item.totalQuestions} questions</span>
                 </div>
-                <span className="rounded-full bg-teal-50 px-2 py-1 text-xs text-teal-700">{item.totalQuestions} questions</span>
-              </div>
-            ))}
+              );
+            })}
             {!usage?.byVault?.length && <EmptyPanel text="还没有问答用量数据。" />}
           </div>
         </section>

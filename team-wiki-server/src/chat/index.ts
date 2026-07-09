@@ -191,13 +191,18 @@ export function createChatRouter(
       const outputChars = fullText.length;
       const historyChars = priorMessages.reduce((sum, msg) => sum + msg.content.length, 0);
       const totalInputChars = historyChars + inputChars + toolCalls.reduce((s, tc) => s + JSON.stringify(tc.args).length + (tc.result?.length || 0), 0);
+      const inputTokens = estimateTokens(totalInputChars);
+      const outputTokens = estimateTokens(outputChars);
       const usage = {
         elapsedMs,
         inputChars,
         outputChars,
-        estimatedInputTokens: estimateTokens(totalInputChars),
-        estimatedOutputTokens: estimateTokens(outputChars),
-        estimatedTotalTokens: estimateTokens(totalInputChars) + estimateTokens(outputChars),
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        estimatedInputTokens: inputTokens,
+        estimatedOutputTokens: outputTokens,
+        estimatedTotalTokens: inputTokens + outputTokens,
       };
       const sources = extractSources(toolCalls);
 
@@ -218,15 +223,19 @@ export function createChatRouter(
               vaultName,
             })))
           : undefined,
+        metadata: {
+          usage,
+          model: publicRuntimeModel(selectedModel),
+        },
       });
 
       await getDb().addUsageEvent({
         userId,
         vaultId: activeVaultId,
         sessionId,
-        inputTokens: usage.estimatedInputTokens,
-        outputTokens: usage.estimatedOutputTokens,
-        totalTokens: usage.estimatedTotalTokens,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        totalTokens: usage.totalTokens,
         elapsedMs,
       });
 
@@ -305,6 +314,24 @@ export function createChatRouter(
   });
 
   // ─── DELETE /api/sessions/:id — Delete session ─────────
+
+  router.put('/sessions/:id', async (req: Request, res: Response) => {
+    const userId = getRequestUserId(req);
+    const sid = String(req.params.id);
+    const title = String(req.body?.title || '').trim();
+    if (!title) {
+      res.status(400).json({ error: 'Title is required' });
+      return;
+    }
+    const session = await sessions.getSession(sid);
+    if (!session || session.userId !== userId) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+    await sessions.updateSessionTitle(sid, title.slice(0, 120));
+    const next = await sessions.getSession(sid);
+    res.json({ session: next });
+  });
 
   router.delete('/sessions/:id', async (req: Request, res: Response) => {
     const userId = getRequestUserId(req);

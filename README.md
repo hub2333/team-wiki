@@ -18,7 +18,7 @@
 
 - 去掉了 `better-sqlite3`，改为 Node 内置的 `node:sqlite`
 - 后端支持通过不同配置文件切换 `sqlite / postgres`
-- 补充了建表 SQL：`team-wiki-server/sql/`
+- 补充了建表 SQL：`sql/`
 - 根目录启动脚本默认走本地 SQLite
 - Web UI 支持填写 `Bearer Token / JWT`
 - API / MCP 统一走同一套认证逻辑
@@ -60,14 +60,15 @@ team-wiki/
 │   ├── start.ps1
 │   ├── start-server.ps1
 │   └── start-ui.ps1
+├── sql/
+│   ├── full.postgres.sql
+│   ├── schema.postgres.sql
+│   └── schema.sqlite.sql
 ├── team-wiki-server/
 │   ├── package.json
 │   ├── .env.example
 │   ├── .env.sqlite.example
 │   ├── .env.postgres.example
-│   ├── sql/
-│   │   ├── schema.sqlite.sql
-│   │   └── schema.postgres.sql
 │   ├── src/
 │   │   ├── app.ts
 │   │   ├── cli.ts
@@ -81,10 +82,9 @@ team-wiki/
 │   │   ├── parser/
 │   │   ├── utils/
 │   │   └── watcher/
-│   └── test-vault/
-└── team-wiki-vue-ui/
+└── team-wiki-react-ui/
     ├── package.json
-    ├── vite.config.js
+    ├── vite.config.ts
     └── src/
 ```
 
@@ -114,7 +114,7 @@ Obsidian Vault
 cd team-wiki/team-wiki-server
 npm install
 
-cd ../team-wiki-vue-ui
+cd ../team-wiki-react-ui
 npm install
 ```
 
@@ -298,7 +298,7 @@ npm run dev
 前端：
 
 ```powershell
-cd team-wiki\team-wiki-vue-ui
+cd team-wiki\team-wiki-react-ui
 npm run dev
 ```
 
@@ -308,7 +308,7 @@ npm run dev
 
 | 服务 | 地址 |
 |------|------|
-| Web UI | `http://localhost:3101` |
+| Web UI | `http://localhost:3202` |
 | Chat API | `POST http://localhost:3100/api/chat` |
 | Session API | `http://localhost:3100/api/sessions` |
 | MCP | `http://localhost:3100/mcp` |
@@ -370,14 +370,14 @@ npm run dev -- --env-file .env.postgres
 | `MCP_ENABLED` | 是否启用 MCP | `true` |
 | `WATCH_DEBOUNCE_MS` | 文件监听防抖 | `2000` |
 | `INDEX_CONCURRENCY` | 索引并发度 | `10` |
-| `CORS_ORIGINS` | 允许跨域来源 | `http://localhost:3101` |
+| `CORS_ORIGINS` | 允许跨域来源 | `http://localhost:3202` |
 
 ## 建表 SQL
 
 项目里已经补了两份 SQL：
 
-- [schema.sqlite.sql](./team-wiki-server/sql/schema.sqlite.sql)
-- [schema.postgres.sql](./team-wiki-server/sql/schema.postgres.sql)
+- [schema.sqlite.sql](./sql/schema.sqlite.sql)
+- [schema.postgres.sql](./sql/schema.postgres.sql)
 
 接入文档见：
 
@@ -394,12 +394,12 @@ npm run dev -- --env-file .env.postgres
 手工执行 PostgreSQL 初始化示例：
 
 ```bash
-psql "$DATABASE_URL" -f team-wiki-server/sql/schema.postgres.sql
+psql "$DATABASE_URL" -f sql/schema.postgres.sql
 ```
 
 ## Web UI
 
-`team-wiki-vue-ui` 当前主要提供：
+`team-wiki-react-ui` 当前主要提供：
 
 - 会话列表
 - 新建 / 切换 / 删除会话
@@ -507,7 +507,7 @@ npm run build
 前端构建：
 
 ```bash
-cd team-wiki/team-wiki-vue-ui
+cd team-wiki/team-wiki-react-ui
 npm run build
 ```
 

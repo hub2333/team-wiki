@@ -75,6 +75,7 @@ CREATE TABLE messages (
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
   content TEXT NOT NULL,
   tool_calls TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at BIGINT NOT NULL
 );
 

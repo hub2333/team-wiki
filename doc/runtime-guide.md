@@ -8,7 +8,6 @@
 team-wiki/
 ├─ team-wiki-server/       # 后端：Express + OpenAI Agents + SQLite/PostgreSQL
 ├─ team-wiki-react-ui/     # 前端：React + Vite + TypeScript + Tailwind
-├─ team-wiki-vue-ui/       # 旧 Vue 前端，当前要求保留不动
 └─ doc/                    # 项目文档
 ```
 
@@ -131,7 +130,7 @@ Invoke-WebRequest -UseBasicParsing http://localhost:3100/health
 全量重建脚本：
 
 ```text
-team-wiki-server/sql/full.postgres.sql
+sql/full.postgres.sql
 ```
 
 该脚本会先删除应用相关表，再重新创建完整结构和索引。适合新库初始化或需要重置库结构时执行。
@@ -139,14 +138,14 @@ team-wiki-server/sql/full.postgres.sql
 执行示例：
 
 ```powershell
-psql "$env:DATABASE_URL" -f .\team-wiki-server\sql\full.postgres.sql
+psql :DATABASE_URL -f .sqlull.postgres.sql
 ```
 
 或在后端目录：
 
 ```powershell
 cd D:\WorkSpace\LLM-Wiki\team-wiki\team-wiki-server
-psql "$env:DATABASE_URL" -f .\sql\full.postgres.sql
+psql :DATABASE_URL -f ..sqlull.postgres.sql
 ```
 
 注意：
@@ -222,7 +221,7 @@ PostgreSQL 本地/测试环境：
 
 ```powershell
 cd D:\WorkSpace\LLM-Wiki\team-wiki
-psql "$env:DATABASE_URL" -f .\team-wiki-server\sql\full.postgres.sql
+psql :DATABASE_URL -f .sqlull.postgres.sql
 
 cd .\team-wiki-server
 npm run dev:postgres
@@ -233,7 +232,7 @@ npm run dev
 
 ## 注意事项
 
-- `team-wiki-vue-ui` 是旧前端，当前开发方向是 `team-wiki-react-ui`，不要修改旧 Vue 前端。
+- 前端当前使用 team-wiki-react-ui，旧 Vue 前端已删除。
 - `team-kb-qa-ui` 已废弃并删除。
 - 后端启动时会索引所有启用的知识库，知识库文件多时启动会稍慢。
 - 新增或修改知识库路径后，需要在管理页面触发重建索引，或重启后端。

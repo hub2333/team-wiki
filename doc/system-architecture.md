@@ -256,9 +256,9 @@ MCP 暴露的是知识图谱工具，不是聊天 UI 那套会话式 assistant�
 
 代码位置：
 
-- [team-wiki-vue-ui/src/views/ChatView.vue](/D:/WorkSpace/LLM-Wiki/team-wiki/team-wiki-vue-ui/src/views/ChatView.vue)
+- [team-wiki-react-ui/src/App.tsx](../team-wiki-react-ui/src/App.tsx)
 
-前端当前是一个独立的 Vue 3 应用，主要提供：
+前端当前是一个独立的 React + Vite 应用，主要提供：
 
 - 会话列表
 - 新建 / 切换 / 删除会话

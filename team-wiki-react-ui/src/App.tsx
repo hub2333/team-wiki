@@ -13,6 +13,7 @@ import {
   Gauge,
   KeyRound,
   Library,
+  ListChecks,
   Loader2,
   LogOut,
   MessageSquareText,
@@ -762,6 +763,7 @@ function AskWorkspace(props: {
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [renamingSession, setRenamingSession] = useState<Session | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [pendingDeleteSessionIds, setPendingDeleteSessionIds] = useState<string[]>([]);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const selectedTitle = props.currentSessionId
     ? props.sessions.find(session => session.id === props.currentSessionId)?.title || 'Ask'
@@ -788,16 +790,22 @@ function AskWorkspace(props: {
 
   async function deleteSessionsWithConfirm(sessionIds: string[]) {
     if (!sessionIds.length) return;
-    if (!window.confirm(sessionIds.length === 1 ? 'Delete this chat?' : `Delete ${sessionIds.length} chats?`)) return;
     setSessionActionBusy(true);
     try {
       await props.onDeleteSessions(sessionIds);
       setSelectedSessionIds([]);
       setBulkMode(false);
       setSessionMenuId(null);
+      setPendingDeleteSessionIds([]);
     } finally {
       setSessionActionBusy(false);
     }
+  }
+
+  function requestDeleteSessions(sessionIds: string[]) {
+    if (!sessionIds.length || sessionActionBusy) return;
+    setPendingDeleteSessionIds(sessionIds);
+    setSessionMenuId(null);
   }
 
   function startRenameSession(session: Session) {
@@ -843,17 +851,18 @@ function AskWorkspace(props: {
             New chat
           </button>
           <button
-            className={cn('flex h-10 items-center justify-center rounded-md border text-sm transition', bulkMode ? 'border-teal-600 bg-teal-50 text-teal-700' : 'border-slate-200 bg-white text-slate-600 hover:text-slate-950')}
+            className={cn('flex h-10 items-center justify-center rounded-md border text-sm transition', bulkMode ? 'border-teal-600 bg-teal-50 text-teal-700' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950')}
             title={bulkMode ? 'Exit selection' : 'Select chats'}
+            aria-label={bulkMode ? 'Exit chat selection' : 'Select chats'}
             onClick={toggleBulkMode}
           >
-            {bulkMode ? <X size={16} /> : <CheckCircle2 size={16} />}
+            {bulkMode ? <X size={16} /> : <ListChecks size={17} />}
           </button>
         </div>
         {bulkMode && (
           <div className="mb-3 flex items-center justify-between gap-2 rounded-md border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-800">
             <span>{selectedSessionIds.length} selected</span>
-            <button className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-red-600 shadow-sm disabled:opacity-50" disabled={!selectedSessionIds.length || sessionActionBusy} onClick={() => deleteSessionsWithConfirm(selectedSessionIds)}>
+            <button className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-red-600 shadow-sm disabled:opacity-50" disabled={!selectedSessionIds.length || sessionActionBusy} onClick={() => requestDeleteSessions(selectedSessionIds)}>
               {sessionActionBusy ? <Loader2 className="animate-spin" size={13} /> : <Trash2 size={13} />}
               Delete
             </button>
@@ -923,7 +932,7 @@ function AskWorkspace(props: {
                             <Pencil size={14} />
                             Rename
                           </button>
-                          <button className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50" onClick={() => deleteSessionsWithConfirm([session.id])}>
+                          <button className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50" onClick={() => requestDeleteSessions([session.id])}>
                             <Trash2 size={14} />
                             Delete
                           </button>
@@ -952,6 +961,16 @@ function AskWorkspace(props: {
           </div>
         </AdminModal>
       )}
+
+      <DeleteSessionsModal
+        open={pendingDeleteSessionIds.length > 0}
+        count={pendingDeleteSessionIds.length}
+        busy={sessionActionBusy}
+        onClose={() => {
+          if (!sessionActionBusy) setPendingDeleteSessionIds([]);
+        }}
+        onConfirm={() => deleteSessionsWithConfirm(pendingDeleteSessionIds)}
+      />
 
       <section className="flex min-h-0 flex-col bg-slate-50/45">
         <header className="border-b border-slate-200/70 bg-white/68 px-8 py-4 backdrop-blur">
@@ -1138,6 +1157,52 @@ function MarkdownContent({ children }: { children: string }) {
     <div className="chat-prose">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
     </div>
+  );
+}
+
+function DeleteSessionsModal({ open, count, busy, onClose, onConfirm }: {
+  open: boolean;
+  count: number;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <AdminModal
+      open={open}
+      title={count === 1 ? 'Delete chat' : 'Delete chats'}
+      description={count === 1 ? 'This chat will be removed from your chat history.' : `${count} selected chats will be removed from your chat history.`}
+      onClose={onClose}
+    >
+      <div className="space-y-5">
+        <div className="flex gap-3 rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm leading-6 text-red-700">
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white text-red-600 shadow-sm shadow-red-200/40">
+            <Trash2 size={16} />
+          </span>
+          <div>
+            <div className="font-semibold text-red-800">This action cannot be undone.</div>
+            <div className="mt-0.5 text-red-700/85">The messages in {count === 1 ? 'this chat' : 'these chats'} will no longer appear in the Ask sidebar.</div>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <button
+            className="h-10 rounded-md border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-950 disabled:opacity-60"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            className="flex h-10 items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
+            Delete
+          </button>
+        </div>
+      </div>
+    </AdminModal>
   );
 }
 

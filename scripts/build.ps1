@@ -13,7 +13,7 @@ Write-Host ""
 Write-Host "========================================="
 Write-Host "  Building ui..."
 Write-Host "========================================="
-Set-Location (Join-Path $RootDir "team-wiki-vue-ui")
+Set-Location (Join-Path $RootDir "team-wiki-react-ui")
 npm run build
 Write-Host "ui build complete"
 

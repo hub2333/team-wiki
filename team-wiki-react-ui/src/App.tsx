@@ -45,6 +45,7 @@ import {
   deleteVault,
   getMe,
   getAgentConfig,
+  getDefaultAgentConfig,
   getOverview,
   getSession,
   getStoredToken,
@@ -258,8 +259,14 @@ export default function App() {
     enabled: Boolean(token && user?.role === 'admin'),
   });
 
-  const agentConfigQuery = useQuery({
-    queryKey: ['agent-config', token],
+  const defaultAgentQuery = useQuery({
+    queryKey: ['agent-default', token],
+    queryFn: () => getDefaultAgentConfig(token),
+    enabled: Boolean(token),
+  });
+
+  const adminAgentConfigQuery = useQuery({
+    queryKey: ['admin-agent-config', token],
     queryFn: () => getAgentConfig(token),
     enabled: Boolean(token && user?.role === 'admin'),
   });
@@ -369,16 +376,18 @@ export default function App() {
   async function sendMessage(preset?: string) {
     const text = (preset ?? input).trim();
     if (!text || !activeVaultIds.length || isStreaming) return;
+    const currentAgent = defaultAgentQuery.data?.agent;
+    const agentUsesSelectedModel = currentAgent?.provider !== 'claude_code';
     const statuses = Object.values(vaultStatusesQuery.data ?? {});
     if (statuses.length !== activeVaultIds.length || statuses.some(status => !status.indexed)) {
       setError('所选知识库尚未全部进入运行时索引，请在 Knowledge 页面检查配置。');
       return;
     }
-    if (!selectedModel) {
+    if (agentUsesSelectedModel && !selectedModel) {
       setError('没有可用模型，请先在 Models 页面配置模型。');
       return;
     }
-    if (!selectedModel.hasApiKey) {
+    if (agentUsesSelectedModel && selectedModel && !selectedModel.hasApiKey) {
       setError(`当前模型「${selectedModel.name}」缺少 API Key，请先在 Models 页面补全。`);
       return;
     }
@@ -399,7 +408,7 @@ export default function App() {
       let finalSources: ChatSource[] = [];
       await streamChat(
         token,
-        { message: text, vaultIds: activeVaultIds, sessionId: currentSessionId, modelId: selectedModel.id },
+        { message: text, vaultIds: activeVaultIds, sessionId: currentSessionId, modelId: selectedModel?.id },
         (event: ChatEvent) => {
           if (
             event.type === 'sub_agent_start' ||
@@ -472,7 +481,8 @@ export default function App() {
       queryClient.invalidateQueries({ queryKey: ['admin-vaults', token] }),
       queryClient.invalidateQueries({ queryKey: ['admin-users', token] }),
       queryClient.invalidateQueries({ queryKey: ['admin-models', token] }),
-      queryClient.invalidateQueries({ queryKey: ['agent-config', token] }),
+      queryClient.invalidateQueries({ queryKey: ['agent-default', token] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-agent-config', token] }),
       queryClient.invalidateQueries({ queryKey: ['models', token] }),
       queryClient.invalidateQueries({ queryKey: ['usage-summary', token] }),
       queryClient.invalidateQueries({ queryKey: ['vault-status'] }),
@@ -539,6 +549,7 @@ export default function App() {
             models={models}
             selectedModel={selectedModel}
             lastUsedModel={lastUsedModel}
+            agent={defaultAgentQuery.data?.agent}
             modelsLoading={modelsQuery.isLoading}
             selectedModelId={selectedModelId}
             onSelectModel={setSelectedModelId}
@@ -582,10 +593,13 @@ export default function App() {
         ) : view === 'agents' ? (
           <AgentsPage
             token={token}
-            agent={agentConfigQuery.data?.agent}
-            loading={agentConfigQuery.isLoading}
+            agent={adminAgentConfigQuery.data?.agent}
+            loading={adminAgentConfigQuery.isLoading}
             onChanged={async () => {
-              await queryClient.invalidateQueries({ queryKey: ['agent-config', token] });
+              await Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['agent-default', token] }),
+                queryClient.invalidateQueries({ queryKey: ['admin-agent-config', token] }),
+              ]);
             }}
           />
         ) : view === 'insights' ? (
@@ -772,6 +786,7 @@ function AskWorkspace(props: {
   models: ModelConfig[];
   selectedModel: ModelConfig | null;
   lastUsedModel: ModelConfig | null;
+  agent?: AgentConfig;
   modelsLoading: boolean;
   selectedModelId: string;
   onSelectModel: (modelId: string) => void;
@@ -805,7 +820,13 @@ function AskWorkspace(props: {
   const scopeText = props.selectedVaults.length
     ? 'Scope: ' + props.selectedVaults.length + ' vaults'
     : 'Scope not set';
-  const modelReady = Boolean(props.selectedModel?.hasApiKey);
+  const agentUsesSelectedModel = props.agent?.provider !== 'claude_code';
+  const modelReady = props.agent?.provider === 'claude_code' || Boolean(props.selectedModel?.hasApiKey);
+  const inputPlaceholder = !props.indexed
+    ? 'Knowledge scope is not indexed yet'
+    : modelReady
+      ? 'Ask a question. Enter to send, Shift+Enter for newline'
+      : 'Selected model is missing an API key';
   const filteredSessions = props.sessions.filter(session =>
     ((session.title || '') + ' ' + scopeLabelForSession(session, props.vaults)).toLowerCase().includes(sessionFilter.toLowerCase()),
   );
@@ -1062,7 +1083,7 @@ function AskWorkspace(props: {
           <div className="mx-auto max-w-[880px] rounded-xl border border-slate-200 bg-white p-2 shadow-sm shadow-slate-200/60">
             <textarea
               className="chat-composer min-h-12 w-full resize-none bg-transparent px-3 py-3 outline-none"
-              placeholder={!props.indexed ? 'Knowledge scope is not indexed yet' : modelReady ? 'Ask a question. Enter to send, Shift+Enter for newline' : 'Selected model is missing an API key'}
+              placeholder={inputPlaceholder}
               value={props.input}
               disabled={!props.indexed || props.isStreaming || !modelReady}
               onChange={event => props.setInput(event.target.value)}
@@ -1081,6 +1102,7 @@ function AskWorkspace(props: {
                 disabled={props.isStreaming || props.modelsLoading || !props.models.length}
                 loading={props.modelsLoading}
                 onSelect={props.onSelectModel}
+                agentUsesSelectedModel={agentUsesSelectedModel}
                 compact
               />
               <button className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-teal-700 text-white transition hover:bg-teal-800 disabled:opacity-50" disabled={!props.input.trim() || props.isStreaming || !props.indexed || !modelReady} onClick={() => props.sendMessage()}>
@@ -1093,7 +1115,7 @@ function AskWorkspace(props: {
     </main>
   );
 }
-function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading, onSelect, compact = false }: {
+function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading, onSelect, compact = false, agentUsesSelectedModel = true }: {
   models: ModelConfig[];
   selectedModel: ModelConfig | null;
   selectedModelId: string;
@@ -1101,9 +1123,11 @@ function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading
   loading: boolean;
   onSelect: (modelId: string) => void;
   compact?: boolean;
+  agentUsesSelectedModel?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const activeModel = selectedModel ?? models.find(model => model.id === selectedModelId) ?? models[0] ?? null;
+  const modelHasKeyWarning = agentUsesSelectedModel && Boolean(activeModel && !activeModel.hasApiKey);
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -1118,8 +1142,8 @@ function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading
           compact
             ? 'h-11 gap-2 px-2.5 text-slate-600 hover:bg-slate-100 hover:text-slate-950'
             : 'h-12 gap-3 border border-slate-200 bg-white px-3 shadow-sm shadow-slate-200/40 hover:border-teal-200 hover:bg-teal-50/30',
-          compact && activeModel && !activeModel.hasApiKey && 'text-amber-700 hover:bg-amber-50 hover:text-amber-800',
-          !compact && activeModel && !activeModel.hasApiKey && 'border-amber-200 bg-amber-50/60 hover:border-amber-300 hover:bg-amber-50',
+          compact && modelHasKeyWarning && 'text-amber-700 hover:bg-amber-50 hover:text-amber-800',
+          !compact && modelHasKeyWarning && 'border-amber-200 bg-amber-50/60 hover:border-amber-300 hover:bg-amber-50',
           open && (compact ? 'bg-slate-100 text-slate-950' : 'border-teal-300 ring-4 ring-teal-700/10'),
         )}
         disabled={disabled}
@@ -1141,8 +1165,8 @@ function ModelPicker({ models, selectedModel, selectedModelId, disabled, loading
             {activeModel && <span className="truncate font-mono">{activeModel.model}</span>}
           </span>
         </span>
-        <span className={cn('shrink-0 text-xs', compact && 'hidden', activeModel?.hasApiKey ? 'text-emerald-600' : 'text-amber-600')}>
-          {activeModel?.hasApiKey ? 'Ready' : 'Key missing'}
+        <span className={cn('shrink-0 text-xs', compact && 'hidden', !agentUsesSelectedModel ? 'text-teal-700' : activeModel?.hasApiKey ? 'text-emerald-600' : 'text-amber-600')}>
+          {!agentUsesSelectedModel ? 'Agent model' : activeModel?.hasApiKey ? 'Ready' : 'Key missing'}
         </span>
         {compact && <ChevronDown className={cn('shrink-0 transition', open && 'rotate-180')} size={14} />}
       </button>

@@ -166,6 +166,10 @@ export function getAgentConfig(token: string) {
   return apiFetch<{ agent: AgentConfig }>('/api/admin/agent', token);
 }
 
+export function getDefaultAgentConfig(token: string) {
+  return apiFetch<{ agent: AgentConfig }>('/api/agent/default', token);
+}
+
 export function updateAgentConfig(token: string, input: AgentConfig) {
   return apiFetch<{ agent: AgentConfig }>('/api/admin/agent', token, {
     method: 'PUT',

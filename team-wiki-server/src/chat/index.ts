@@ -135,14 +135,16 @@ export function createChatRouter(
     const activeVaultId = activeContexts.length === 1 ? activeContexts[0].vault.id : null;
     const baseSystemPrompt = await resolveBaseSystemPrompt(config, options);
     const sessionModelId = normalizeOptionalId(session?.metadata?.modelId);
+    const selectedAgent = await getAgentConfig();
     let selectedModel: RuntimeModel;
     try {
-      selectedModel = await resolveRuntimeModel(config, requestedModelId || sessionModelId);
+      selectedModel = await resolveRuntimeModel(config, requestedModelId || sessionModelId, {
+        requireApiKey: selectedAgent.provider !== 'claude_code',
+      });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid model configuration' });
       return;
     }
-    const selectedAgent = await getAgentConfig();
 
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
@@ -381,20 +383,25 @@ async function resolveBaseSystemPrompt(
   return setting?.value || config.agentSystemPrompt || options?.systemPrompt || DEFAULT_KNOWLEDGE_AGENT_BASE_PROMPT;
 }
 
-async function resolveRuntimeModel(config: AppConfig, requestedModelId?: string): Promise<RuntimeModel> {
+async function resolveRuntimeModel(
+  config: AppConfig,
+  requestedModelId?: string,
+  options: { requireApiKey?: boolean } = {}
+): Promise<RuntimeModel> {
+  const requireApiKey = options.requireApiKey ?? true;
   if (requestedModelId && requestedModelId !== 'environment') {
     const modelConfig = await getDb().getModelConfig(requestedModelId);
     if (!modelConfig) throw new Error('Model config not found');
     if (!modelConfig.enabled) throw new Error('Selected model is disabled');
-    return applyModelEnvironment(toRuntimeModel(modelConfig));
+    return prepareRuntimeModel(toRuntimeModel(modelConfig), requireApiKey);
   }
 
   const defaultConfig = requestedModelId === 'environment' ? null : await getDb().getDefaultModelConfig();
   if (defaultConfig?.enabled) {
-    return applyModelEnvironment(toRuntimeModel(defaultConfig, true));
+    return prepareRuntimeModel(toRuntimeModel(defaultConfig, true), requireApiKey);
   }
 
-  return applyModelEnvironment({
+  return prepareRuntimeModel({
     id: 'environment',
     name: 'Environment default',
     baseUrl: config.aiBaseUrl,
@@ -402,7 +409,7 @@ async function resolveRuntimeModel(config: AppConfig, requestedModelId?: string)
     apiKey: config.aiApiKey,
     hasApiKey: Boolean(config.aiApiKey),
     isDefault: true,
-  });
+  }, requireApiKey);
 }
 
 function toRuntimeModel(modelConfig: ModelConfig, isDefault = modelConfig.isDefault): RuntimeModel {
@@ -417,10 +424,11 @@ function toRuntimeModel(modelConfig: ModelConfig, isDefault = modelConfig.isDefa
   };
 }
 
-function applyModelEnvironment(model: RuntimeModel): RuntimeModel {
-  if (!model.hasApiKey) {
+function prepareRuntimeModel(model: RuntimeModel, requireApiKey: boolean): RuntimeModel {
+  if (requireApiKey && !model.hasApiKey) {
     throw new Error(`Selected model "${model.name}" is missing an API key`);
   }
+  if (!requireApiKey) return model;
   if (model.apiKey) process.env.OPENAI_API_KEY = model.apiKey;
   if (model.baseUrl) process.env.OPENAI_BASE_URL = model.baseUrl;
   return model;

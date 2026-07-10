@@ -4,7 +4,15 @@ set -e
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER_PORT=3100
 UI_PORT=3202
-ENV_FILE_NAME="${ENV_FILE_NAME:-.env.sqlite}"
+if [ -z "${ENV_FILE_NAME:-}" ]; then
+  if [ -f "$ROOT_DIR/team-wiki-server/.env.sqlite" ]; then
+    ENV_FILE_NAME=".env.sqlite"
+  elif [ -f "$ROOT_DIR/team-wiki-server/.env" ]; then
+    ENV_FILE_NAME=".env"
+  else
+    ENV_FILE_NAME=".env.sqlite"
+  fi
+fi
 
 kill_port() {
   local port=$1 name=$2

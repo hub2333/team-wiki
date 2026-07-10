@@ -2352,7 +2352,7 @@ function AgentsPage({ token, agent, loading, onChanged }: {
     <AdminShell
       icon={Bot}
       title="Agents"
-      description="配置问答策略运行时。Agent 负责工具调用和 loop，模型路由仍在 Models 页面自由选择。"
+      description="配置问答策略运行时。Agent 负责工具调用、loop 和最终合成。"
       action={<RefreshButton loading={loading} onClick={onChanged} />}
     >
       <div className="space-y-5">
@@ -2360,7 +2360,7 @@ function AgentsPage({ token, agent, loading, onChanged }: {
           { label: 'Active', value: draft.provider === 'claude_code' ? 'Claude' : 'OpenAI', hint: 'agent runtime', tone: 'info' },
           { label: 'Tools', value: 13, hint: 'knowledge tools', tone: 'good' },
           { label: 'Max turns', value: draft.maxTurns, hint: 'loop limit' },
-          { label: 'Model source', value: draft.provider === 'claude_code' ? 'Agent' : 'Ask', hint: draft.provider === 'claude_code' ? 'Claude login' : 'selected model' },
+          { label: 'Runtime source', value: draft.provider === 'claude_code' ? 'Claude login' : 'Model route', hint: draft.provider === 'claude_code' ? 'local agent' : 'OpenAI-compatible' },
         ]} />
 
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -2368,7 +2368,7 @@ function AgentsPage({ token, agent, loading, onChanged }: {
             <div className="mb-5">
               <h2 className="text-base font-semibold text-slate-950">Default agent runtime</h2>
               <p className="mt-1 text-sm leading-6 text-slate-500">
-                The selected agent controls tool selection, tool loop, and final synthesis. Users can still choose any enabled model route from Ask.
+                The selected agent controls tool selection, tool loop, and final synthesis for knowledge answers.
               </p>
             </div>
 
@@ -2385,12 +2385,6 @@ function AgentsPage({ token, agent, loading, onChanged }: {
 
               {draft.provider === 'claude_code' ? (
                 <div className="space-y-4">
-                  <Field
-                    label="Claude model alias"
-                    value={draft.claudeModel}
-                    onChange={value => setDraft(prev => ({ ...prev, claudeModel: value }))}
-                    placeholder="留空使用 Claude Code 默认模型，或填 sonnet / opus"
-                  />
                   <NumberField
                     label="Max turns"
                     value={draft.maxTurns}
@@ -2399,7 +2393,7 @@ function AgentsPage({ token, agent, loading, onChanged }: {
                     onChange={value => setDraft(prev => ({ ...prev, maxTurns: value }))}
                   />
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-600">
-                    Claude Code Agent uses the server's local Claude login. TeamWiki only exposes read-only knowledge tools to it.
+                    Claude Code Agent uses the server's local Claude login. TeamWiki only exposes read-only knowledge tools to the agent.
                   </div>
                 </div>
               ) : (
@@ -2428,7 +2422,7 @@ function AgentsPage({ token, agent, loading, onChanged }: {
             <h2 className="text-base font-semibold text-slate-950">Runtime map</h2>
             <div className="mt-4 space-y-3 text-sm">
               <RuntimeLine active={draft.provider === 'openai_agents'} title="OpenAI Agents SDK" detail="Agent loop + TeamWiki direct tools + selected model route" />
-              <RuntimeLine active={draft.provider === 'claude_code'} title="Claude Code Agent SDK" detail="Local Claude login + in-process custom tools + optional Claude model alias" />
+              <RuntimeLine active={draft.provider === 'claude_code'} title="Claude Code Agent SDK" detail="Local Claude login + in-process custom tools" />
             </div>
           </div>
         </section>

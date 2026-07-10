@@ -2373,14 +2373,9 @@ function AgentsPage({ token, agent, loading, onChanged }: {
             </div>
 
             <div className="space-y-5">
-              <SelectField
-                label="Agent runtime"
+              <AgentRuntimePicker
                 value={draft.provider}
-                onChange={value => setDraft(prev => ({ ...prev, provider: value as AgentProvider }))}
-                options={[
-                  ['openai_agents', 'OpenAI Agents SDK'],
-                  ['claude_code', 'Claude Code Agent SDK'],
-                ]}
+                onChange={provider => setDraft(prev => ({ ...prev, provider }))}
               />
 
               {draft.provider === 'claude_code' ? (
@@ -2428,6 +2423,84 @@ function AgentsPage({ token, agent, loading, onChanged }: {
         </section>
       </div>
     </AdminShell>
+  );
+}
+
+function AgentRuntimePicker({ value, onChange }: {
+  value: AgentProvider;
+  onChange: (value: AgentProvider) => void;
+}) {
+  const options: Array<{
+    value: AgentProvider;
+    title: string;
+    detail: string;
+    source: string;
+    icon: ReactNode;
+  }> = [
+    {
+      value: 'claude_code',
+      title: 'Claude Code Agent SDK',
+      detail: '本机 Claude 登录态，Agent 自主完成工具调用和循环。',
+      source: 'Local agent',
+      icon: <Bot size={18} />,
+    },
+    {
+      value: 'openai_agents',
+      title: 'OpenAI Agents SDK',
+      detail: '使用 OpenAI-compatible 模型路由执行 Agent loop。',
+      source: 'Model route',
+      icon: <BrainCircuit size={18} />,
+    },
+  ];
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="text-xs font-medium text-slate-500">Agent runtime</span>
+        <span className="text-[11px] text-slate-400">Select one runtime</span>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {options.map(option => {
+          const active = value === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              className={cn(
+                'group flex min-h-[116px] flex-col justify-between rounded-lg border p-3.5 text-left transition',
+                active
+                  ? 'border-teal-300 bg-teal-50/70 text-slate-950 shadow-sm shadow-teal-100/70 ring-4 ring-teal-700/5'
+                  : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50',
+              )}
+              aria-pressed={active}
+              onClick={() => onChange(option.value)}
+            >
+              <span className="flex items-start justify-between gap-3">
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <span className={cn(
+                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition',
+                    active ? 'border-teal-200 bg-white text-teal-700' : 'border-slate-200 bg-slate-50 text-slate-500 group-hover:text-slate-700',
+                  )}>
+                    {option.icon}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold">{option.title}</span>
+                    <span className="mt-0.5 block text-xs text-slate-500">{option.source}</span>
+                  </span>
+                </span>
+                <span className={cn(
+                  'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border',
+                  active ? 'border-teal-600 bg-teal-600 text-white' : 'border-slate-300 bg-white text-transparent',
+                )}>
+                  <Check size={12} />
+                </span>
+              </span>
+              <span className="mt-3 block text-xs leading-5 text-slate-500">{option.detail}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

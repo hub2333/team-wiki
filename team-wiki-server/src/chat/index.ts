@@ -26,6 +26,8 @@ import {
   SYSTEM_PROMPT_SETTING_KEY,
   buildKnowledgeAgentPromptFromBase,
 } from '../agent/prompts.js';
+import { runClaudeKnowledgeAgent } from '../agent/claude.js';
+import { getAgentConfig, type AgentProvider } from '../admin/routes.js';
 
 const log = createLogger('Chat');
 
@@ -64,6 +66,12 @@ interface RuntimeModel {
   apiKey?: string;
   hasApiKey: boolean;
   isDefault: boolean;
+}
+
+interface RuntimeAgent {
+  provider: AgentProvider;
+  claudeModel: string;
+  maxTurns: number;
 }
 
 // Rough token estimate: ~2 chars per token for mixed CJK/Latin text
@@ -134,6 +142,7 @@ export function createChatRouter(
       res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid model configuration' });
       return;
     }
+    const selectedAgent = await getAgentConfig();
 
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
@@ -163,6 +172,7 @@ export function createChatRouter(
           vaultIds: persistedVaultIds,
           modelId: selectedModel.id,
           modelName: selectedModel.name,
+          agent: selectedAgent,
           model: selectedModel.model,
           modelBaseUrl: selectedModel.baseUrl,
         });
@@ -180,8 +190,8 @@ export function createChatRouter(
       });
 
       const runResult = activeContexts.length === 1
-        ? await runSingleVaultAgent(activeContexts[0], baseSystemPrompt, selectedModel.model, priorMessages, trimmedMessage, sse)
-        : await runParallelVaultAgents(activeContexts, baseSystemPrompt, selectedModel.model, trimmedMessage, sse);
+        ? await runSingleVaultAgent(activeContexts[0], baseSystemPrompt, selectedAgent, selectedModel, priorMessages, trimmedMessage, sse)
+        : await runParallelVaultAgents(activeContexts, baseSystemPrompt, selectedAgent, selectedModel, trimmedMessage, sse);
       const fullText = runResult.fullText;
       const toolCalls = runResult.toolCalls;
 
@@ -226,6 +236,7 @@ export function createChatRouter(
         metadata: {
           usage,
           model: publicRuntimeModel(selectedModel),
+          agent: selectedAgent,
           sources,
         },
       });
@@ -262,6 +273,7 @@ export function createChatRouter(
         sources,
         usage,
         model: publicRuntimeModel(selectedModel),
+        agent: selectedAgent,
       });
 
       res.end();
@@ -429,7 +441,8 @@ function publicRuntimeModel(model: RuntimeModel) {
 async function runSingleVaultAgent(
   ctx: GraphContext,
   basePrompt: string,
-  model: string,
+  agent: RuntimeAgent,
+  model: RuntimeModel,
   priorMessages: sessions.Message[],
   message: string,
   sse: SseFn
@@ -441,11 +454,39 @@ async function runSingleVaultAgent(
     index: 0,
     status: 'searching',
   });
-  const agent = createKnowledgeAgent(ctx.graph, {
-    model,
-    instructions: buildKnowledgeAgentPromptFromBase(ctx.graph, basePrompt),
-  });
-  const result = await runAgentAndCapture(agent, buildRunInput(priorMessages, message), sse, {
+  const input = buildRunInput(priorMessages, message);
+  const result = agent.provider === 'claude_code'
+    ? await runClaudeAgentAndCapture(ctx.graph, buildKnowledgeAgentPromptFromBase(ctx.graph, basePrompt), agent.claudeModel, agent.maxTurns, input, sse, {
+        onToolStart: (tool, args) => {
+          sse('sub_agent_progress', {
+            vaultId: ctx.vault.id,
+            vaultName: ctx.vault.name,
+            status: tool === 'read_note' ? 'reading' : 'searching',
+            step: {
+              type: 'tool_start',
+              tool,
+              args: truncateValue(args),
+            },
+          });
+        },
+        onToolEnd: (tool, output, durationMs) => {
+          sse('sub_agent_progress', {
+            vaultId: ctx.vault.id,
+            vaultName: ctx.vault.name,
+            status: tool === 'read_note' ? 'reading' : 'searching',
+            step: {
+              type: 'tool_end',
+              tool,
+              result: truncateString(output, 300),
+              durationMs,
+            },
+          });
+        },
+      })
+    : await runAgentAndCapture(createKnowledgeAgent(ctx.graph, {
+        model: model.model,
+        instructions: buildKnowledgeAgentPromptFromBase(ctx.graph, basePrompt),
+      }), input, sse, {
     onToolStart: (tool, args) => {
       sse('sub_agent_progress', {
         vaultId: ctx.vault.id,
@@ -494,7 +535,8 @@ async function runSingleVaultAgent(
 async function runParallelVaultAgents(
   contexts: GraphContext[],
   basePrompt: string,
-  model: string,
+  agent: RuntimeAgent,
+  model: RuntimeModel,
   message: string,
   sse: SseFn
 ): Promise<{ fullText: string; toolCalls: CapturedToolCall[] }> {
@@ -522,11 +564,40 @@ async function runParallelVaultAgents(
 2. 明确的来源路径。
 3. 证据不足或冲突之处。
 不要做跨知识库综合判断。`;
-    const agent = createKnowledgeAgent(ctx.graph, { model, instructions });
-    const result = await runAgentAndCapture(agent, [{
+    const input = [{
       role: 'user',
       content: `用户问题：${message}\n\n请并行收集本知识库的线索。`,
-    } as AgentInputItem], undefined, {
+    } as AgentInputItem];
+    const result = agent.provider === 'claude_code'
+      ? await runClaudeAgentAndCapture(ctx.graph, instructions, agent.claudeModel, agent.maxTurns, input, undefined, {
+          emitText: false,
+          onToolStart: (tool, args) => {
+            sse('sub_agent_progress', {
+              vaultId: ctx.vault.id,
+              vaultName: ctx.vault.name,
+              status: tool === 'read_note' ? 'reading' : 'searching',
+              step: {
+                type: 'tool_start',
+                tool,
+                args: truncateValue(args),
+              },
+            });
+          },
+          onToolEnd: (tool, output, durationMs) => {
+            sse('sub_agent_progress', {
+              vaultId: ctx.vault.id,
+              vaultName: ctx.vault.name,
+              status: tool === 'read_note' ? 'reading' : 'searching',
+              step: {
+                type: 'tool_end',
+                tool,
+                result: truncateString(output, 300),
+                durationMs,
+              },
+            });
+          },
+        })
+      : await runAgentAndCapture(createKnowledgeAgent(ctx.graph, { model: model.model, instructions }), input, undefined, {
       emitText: false,
       onToolStart: (tool, args) => {
         sse('sub_agent_progress', {
@@ -589,13 +660,16 @@ async function runParallelVaultAgents(
   });
   const synthAgent = new Agent({
     name: 'Knowledge Synthesizer',
-    model: model as any,
+    model: model.model as any,
     instructions: buildSynthesisPrompt(basePrompt, subResults),
   });
-  const synthesis = await runAgentAndCapture(synthAgent, [{
+  const synthesisInput = [{
     role: 'user',
     content: `用户问题：${message}\n\n请基于 sub agent 并行收集到的线索给出最终回答。`,
-  } as AgentInputItem], sse);
+  } as AgentInputItem];
+  const synthesis = agent.provider === 'claude_code'
+    ? await runClaudeAgentAndCapture(null, buildSynthesisPrompt(basePrompt, subResults), agent.claudeModel, agent.maxTurns, synthesisInput, sse, { emitText: true })
+    : await runAgentAndCapture(synthAgent, synthesisInput, sse);
   sse('synthesis_done', {
     durationMs: Math.max(0, Date.now() - synthesisStarted),
   });
@@ -694,6 +768,51 @@ async function runAgentAndCapture(
   }
 
   return { fullText, toolCalls };
+}
+
+async function runClaudeAgentAndCapture(
+  graph: KnowledgeGraph | null,
+  instructions: string,
+  model: string,
+  maxTurns: number,
+  input: AgentInputItem[],
+  sse?: SseFn,
+  options: AgentCaptureOptions = {}
+): Promise<{ fullText: string; toolCalls: CapturedToolCall[] }> {
+  const result = await runClaudeKnowledgeAgent(graph, input, {
+    model,
+    instructions,
+    toolsEnabled: Boolean(graph),
+    maxTurns,
+    capture: {
+      emitText: options.emitText,
+      onText: (delta) => {
+        if (options.emitText !== false) {
+          sse?.('text', { content: delta });
+        }
+      },
+      onToolStart: (tool, args) => {
+        options.onToolStart?.(tool, args);
+        sse?.('tool_start', {
+          tool,
+          args: truncateValue(args),
+        });
+      },
+      onToolEnd: (tool, output, durationMs) => {
+        options.onToolEnd?.(tool, output, durationMs);
+        sse?.('tool_end', {
+          tool,
+          result: truncateString(output, 300),
+          durationMs,
+        });
+      },
+    },
+  });
+
+  return {
+    fullText: result.fullText,
+    toolCalls: result.toolCalls,
+  };
 }
 
 function buildSynthesisPrompt(

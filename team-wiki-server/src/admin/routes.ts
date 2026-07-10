@@ -13,6 +13,11 @@ import {
 } from '../agent/prompts.js';
 
 export const DEV_JWT_SECRET = 'team-wiki-local-dev-secret';
+export const AGENT_PROVIDER_SETTING_KEY = 'agent.default.provider';
+export const AGENT_CLAUDE_MODEL_SETTING_KEY = 'agent.claude.model';
+export const AGENT_MAX_TURNS_SETTING_KEY = 'agent.maxTurns';
+
+export type AgentProvider = 'openai_agents' | 'claude_code';
 
 export function getJwtSecret(config: AppConfig): string {
   return config.jwtSecret || DEV_JWT_SECRET;
@@ -105,6 +110,10 @@ export function createProductRouter(config: AppConfig, vaultManager?: VaultGraph
     });
   });
 
+  router.get('/agent/default', async (_req: Request, res: Response) => {
+    res.json({ agent: await getAgentConfig() });
+  });
+
   router.get('/admin/overview', requireAdmin, async (_req: Request, res: Response) => {
     const [users, vaults, models] = await Promise.all([
       getDb().listUsers(),
@@ -157,6 +166,48 @@ export function createProductRouter(config: AppConfig, vaultManager?: VaultGraph
         vaultName: ctx.vault.name,
         prompt: buildKnowledgeAgentPromptFromBase(ctx.graph, setting.value),
       })),
+    });
+  });
+
+  router.get('/admin/agent', requireAdmin, async (_req: Request, res: Response) => {
+    res.json({ agent: await getAgentConfig() });
+  });
+
+  router.put('/admin/agent', requireAdmin, async (req: Request, res: Response) => {
+    const provider = normalizeAgentProvider(req.body?.provider);
+    const claudeModel = String(req.body?.claudeModel || '').trim();
+    const maxTurns = normalizeMaxTurns(req.body?.maxTurns);
+    const updatedBy = getRequestUserId(req);
+    await Promise.all([
+      getDb().setSetting(AGENT_PROVIDER_SETTING_KEY, provider, updatedBy),
+      getDb().setSetting(AGENT_CLAUDE_MODEL_SETTING_KEY, claudeModel, updatedBy),
+      getDb().setSetting(AGENT_MAX_TURNS_SETTING_KEY, String(maxTurns), updatedBy),
+    ]);
+    res.json({ agent: await getAgentConfig() });
+  });
+
+  router.post('/admin/agent/test', requireAdmin, async (req: Request, res: Response) => {
+    const provider = normalizeAgentProvider(req.body?.provider);
+    if (provider === 'openai_agents') {
+      res.json({
+        ok: true,
+        checks: { provider: true },
+        message: 'OpenAI Agents SDK is available in-process. Test individual model routes from Models.',
+        latencyMs: 0,
+      });
+      return;
+    }
+    const maxTurns = normalizeMaxTurns(req.body?.maxTurns);
+    const result = await testClaudeCodeAgent({
+      claudeModel: String(req.body?.claudeModel || '').trim(),
+      maxTurns,
+    });
+    res.json({
+      ok: result.ok,
+      checks: { provider: true, localClaudeCodeLogin: result.ok },
+      message: result.message,
+      latencyMs: result.latencyMs,
+      status: result.status,
     });
   });
 
@@ -418,6 +469,33 @@ function publicEnvModel(config: AppConfig) {
   };
 }
 
+export async function getAgentConfig(): Promise<{
+  provider: AgentProvider;
+  claudeModel: string;
+  maxTurns: number;
+}> {
+  const [providerSetting, claudeModelSetting, maxTurnsSetting] = await Promise.all([
+    getDb().getSetting(AGENT_PROVIDER_SETTING_KEY),
+    getDb().getSetting(AGENT_CLAUDE_MODEL_SETTING_KEY),
+    getDb().getSetting(AGENT_MAX_TURNS_SETTING_KEY),
+  ]);
+  return {
+    provider: normalizeAgentProvider(providerSetting?.value),
+    claudeModel: claudeModelSetting?.value || '',
+    maxTurns: normalizeMaxTurns(maxTurnsSetting?.value),
+  };
+}
+
+function normalizeAgentProvider(raw: unknown): AgentProvider {
+  return raw === 'claude_code' ? 'claude_code' : 'openai_agents';
+}
+
+function normalizeMaxTurns(raw: unknown): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 8;
+  return Math.min(20, Math.max(1, Math.floor(parsed)));
+}
+
 async function testOpenAICompatibleModel(model: ModelConfig): Promise<{ ok: boolean; message: string; latencyMs: number; status?: number }> {
   const started = Date.now();
   const controller = new AbortController();
@@ -464,6 +542,45 @@ async function testOpenAICompatibleModel(model: ModelConfig): Promise<{ ok: bool
     };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function testClaudeCodeAgent(input?: { claudeModel?: string; maxTurns?: number }): Promise<{ ok: boolean; message: string; latencyMs: number; status?: number }> {
+  const started = Date.now();
+  const { runClaudeKnowledgeAgent } = await import('../agent/claude.js');
+  const timeoutMs = 20000;
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const result = await Promise.race([
+      runClaudeKnowledgeAgent(null, [{ role: 'user', content: 'Return exactly: pong' } as any], {
+        model: input?.claudeModel || undefined,
+        instructions: 'You are a concise connectivity checker.',
+        toolsEnabled: false,
+        maxTurns: input?.maxTurns || 1,
+        capture: { emitText: false },
+      }),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Claude Code check timed out after ${timeoutMs}ms.`)), timeoutMs);
+      }),
+    ]);
+    const latencyMs = Date.now() - started;
+    return {
+      ok: Boolean(result.fullText.trim()),
+      status: 200,
+      latencyMs,
+      message: result.fullText.trim()
+        ? `Claude Code agent check passed in ${latencyMs}ms.`
+        : 'Claude Code returned an empty response.',
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - started;
+    return {
+      ok: false,
+      latencyMs,
+      message: `Claude Code check failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 

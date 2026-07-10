@@ -1,4 +1,4 @@
-import type { ChatSource, ChatUsage, ReasoningStatus, ReasoningStep } from '../types';
+import type { AgentConfig, ChatSource, ChatUsage, ReasoningStatus, ReasoningStep } from '../types';
 
 export type ChatEvent =
   | { type: 'text'; content: string }
@@ -9,7 +9,7 @@ export type ChatEvent =
   | { type: 'sub_agent_done'; vaultId: string; vaultName: string; status: ReasoningStatus; summary?: string; durationMs?: number; sources?: ChatSource[] }
   | { type: 'synthesis_start'; vaultCount?: number; vaults?: Array<{ vaultId: string; vaultName: string }> }
   | { type: 'synthesis_done'; durationMs?: number }
-  | { type: 'done'; sessionId?: string; vaultId?: string | null; usage?: ChatUsage; sources?: ChatSource[]; model?: { id: string; name: string; model: string; baseUrl: string; hasApiKey: boolean; isDefault: boolean } }
+  | { type: 'done'; sessionId?: string; vaultId?: string | null; usage?: ChatUsage; sources?: ChatSource[]; model?: { id: string; name: string; model: string; baseUrl: string; hasApiKey: boolean; isDefault: boolean }; agent?: AgentConfig }
   | { type: 'error'; message: string };
 
 export async function streamChat(

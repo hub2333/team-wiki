@@ -44,6 +44,7 @@ import {
   deleteUser,
   deleteVault,
   getMe,
+  getAgentConfig,
   getOverview,
   getSession,
   getStoredToken,
@@ -60,14 +61,16 @@ import {
   renameSession,
   storeToken,
   testModel,
+  testAgentConfig,
   updateModel,
+  updateAgentConfig,
   updateSystemPrompt,
   updateUser,
   updateVault,
 } from './lib/api';
 import { streamChat, type ChatEvent } from './lib/sse';
 import { cn, compactNumber, formatTime, parseToolCalls } from './lib/utils';
-import type { AdminUser, ChatSource, ChatUsage, Message, ModelConfig, Overview, ReasoningTrace, Session, SystemPromptResponse, ToolCall, UsageSummary, User, Vault } from './types';
+import type { AdminUser, AgentConfig, AgentProvider, ChatSource, ChatUsage, Message, ModelConfig, Overview, ReasoningTrace, Session, SystemPromptResponse, ToolCall, UsageSummary, User, Vault } from './types';
 
 type ViewKey = 'ask' | 'knowledge' | 'people' | 'models' | 'agents' | 'insights' | 'settings';
 
@@ -252,6 +255,12 @@ export default function App() {
   const adminModelsQuery = useQuery({
     queryKey: ['admin-models', token],
     queryFn: () => listAdminModels(token),
+    enabled: Boolean(token && user?.role === 'admin'),
+  });
+
+  const agentConfigQuery = useQuery({
+    queryKey: ['agent-config', token],
+    queryFn: () => getAgentConfig(token),
     enabled: Boolean(token && user?.role === 'admin'),
   });
 
@@ -463,6 +472,7 @@ export default function App() {
       queryClient.invalidateQueries({ queryKey: ['admin-vaults', token] }),
       queryClient.invalidateQueries({ queryKey: ['admin-users', token] }),
       queryClient.invalidateQueries({ queryKey: ['admin-models', token] }),
+      queryClient.invalidateQueries({ queryKey: ['agent-config', token] }),
       queryClient.invalidateQueries({ queryKey: ['models', token] }),
       queryClient.invalidateQueries({ queryKey: ['usage-summary', token] }),
       queryClient.invalidateQueries({ queryKey: ['vault-status'] }),
@@ -568,6 +578,15 @@ export default function App() {
             models={adminModelsQuery.data?.models ?? []}
             loading={adminModelsQuery.isLoading}
             onChanged={refreshAdminData}
+          />
+        ) : view === 'agents' ? (
+          <AgentsPage
+            token={token}
+            agent={agentConfigQuery.data?.agent}
+            loading={agentConfigQuery.isLoading}
+            onChanged={async () => {
+              await queryClient.invalidateQueries({ queryKey: ['agent-config', token] });
+            }}
           />
         ) : view === 'insights' ? (
           <InsightsPage overview={overviewQuery.data} usage={usageQuery.data} vaults={adminVaultsQuery.data?.vaults ?? vaults} models={adminModelsQuery.data?.models ?? []} users={adminUsersQuery.data?.users ?? []} />
@@ -2006,7 +2025,14 @@ function UserRow({ user, saving, onEdit, onDelete }: {
 }
 
 function ModelsPage({ token, models, loading, onChanged }: { token: string; models: ModelConfig[]; loading: boolean; onChanged: () => Promise<void> }) {
-  const [draft, setDraft] = useState({ name: '', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-v4-flash', apiKey: '', enabled: true, isDefault: false });
+  const [draft, setDraft] = useState({
+    name: '',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-v4-flash',
+    apiKey: '',
+    enabled: true,
+    isDefault: false,
+  });
   const [saving, setSaving] = useState('');
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('');
@@ -2016,7 +2042,14 @@ function ModelsPage({ token, models, loading, onChanged }: { token: string; mode
   const visibleModels = models.filter(model => `${model.name} ${model.baseUrl} ${model.model}`.toLowerCase().includes(filter.toLowerCase()));
 
   function openCreate() {
-    setDraft({ name: '', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-v4-flash', apiKey: '', enabled: true, isDefault: false });
+    setDraft({
+      name: '',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+      apiKey: '',
+      enabled: true,
+      isDefault: false,
+    });
     setEditingModel(null);
     setError('');
     setDrawerMode('create');
@@ -2245,6 +2278,153 @@ function ModelRow({ model, saving, onEdit, onDelete, onTest }: {
   );
 }
 
+function AgentsPage({ token, agent, loading, onChanged }: {
+  token: string;
+  agent?: AgentConfig;
+  loading: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<AgentConfig>({ provider: 'openai_agents', claudeModel: '', maxTurns: 8 });
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (agent) setDraft(agent);
+  }, [agent]);
+
+  async function saveAgent() {
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      await updateAgentConfig(token, draft);
+      await onChanged();
+      setMessage('Agent strategy saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Save agent failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function testAgent() {
+    setTesting(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await testAgentConfig(token, draft);
+      const latency = typeof result.latencyMs === 'number' && result.latencyMs > 0 ? ` (${result.latencyMs}ms)` : '';
+      setMessage(`${result.ok ? 'OK' : 'Failed'}${latency} - ${result.message}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Test agent failed');
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <AdminShell
+      icon={Bot}
+      title="Agents"
+      description="配置问答策略运行时。Agent 负责工具调用和 loop，模型路由仍在 Models 页面自由选择。"
+      action={<RefreshButton loading={loading} onClick={onChanged} />}
+    >
+      <div className="space-y-5">
+        <AdminStatsBar items={[
+          { label: 'Active', value: draft.provider === 'claude_code' ? 'Claude' : 'OpenAI', hint: 'agent runtime', tone: 'info' },
+          { label: 'Tools', value: 13, hint: 'knowledge tools', tone: 'good' },
+          { label: 'Max turns', value: draft.maxTurns, hint: 'loop limit' },
+          { label: 'Model source', value: draft.provider === 'claude_code' ? 'Agent' : 'Ask', hint: draft.provider === 'claude_code' ? 'Claude login' : 'selected model' },
+        ]} />
+
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/40">
+            <div className="mb-5">
+              <h2 className="text-base font-semibold text-slate-950">Default agent runtime</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500">
+                The selected agent controls tool selection, tool loop, and final synthesis. Users can still choose any enabled model route from Ask.
+              </p>
+            </div>
+
+            <div className="space-y-5">
+              <SelectField
+                label="Agent runtime"
+                value={draft.provider}
+                onChange={value => setDraft(prev => ({ ...prev, provider: value as AgentProvider }))}
+                options={[
+                  ['openai_agents', 'OpenAI Agents SDK'],
+                  ['claude_code', 'Claude Code Agent SDK'],
+                ]}
+              />
+
+              {draft.provider === 'claude_code' ? (
+                <div className="space-y-4">
+                  <Field
+                    label="Claude model alias"
+                    value={draft.claudeModel}
+                    onChange={value => setDraft(prev => ({ ...prev, claudeModel: value }))}
+                    placeholder="留空使用 Claude Code 默认模型，或填 sonnet / opus"
+                  />
+                  <NumberField
+                    label="Max turns"
+                    value={draft.maxTurns}
+                    min={1}
+                    max={20}
+                    onChange={value => setDraft(prev => ({ ...prev, maxTurns: value }))}
+                  />
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-600">
+                    Claude Code Agent uses the server's local Claude login. TeamWiki only exposes read-only knowledge tools to it.
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-600">
+                  OpenAI Agents SDK uses the model selected in Ask or the default model route configured in Models.
+                </div>
+              )}
+
+              {error && <InlineError text={error} />}
+              {message && <div className="rounded-lg border border-teal-100 bg-teal-50 px-3 py-2 text-sm text-teal-800">{message}</div>}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button className="flex h-10 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60" disabled={saving || testing} onClick={saveAgent}>
+                  {saving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+                  Save agent
+                </button>
+                <button className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-600 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-60" disabled={saving || testing} onClick={testAgent}>
+                  {testing ? <Loader2 className="animate-spin" size={16} /> : <Activity size={16} />}
+                  Test runtime
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/40">
+            <h2 className="text-base font-semibold text-slate-950">Runtime map</h2>
+            <div className="mt-4 space-y-3 text-sm">
+              <RuntimeLine active={draft.provider === 'openai_agents'} title="OpenAI Agents SDK" detail="Agent loop + TeamWiki direct tools + selected model route" />
+              <RuntimeLine active={draft.provider === 'claude_code'} title="Claude Code Agent SDK" detail="Local Claude login + in-process custom tools + optional Claude model alias" />
+            </div>
+          </div>
+        </section>
+      </div>
+    </AdminShell>
+  );
+}
+
+function RuntimeLine({ active, title, detail }: { active: boolean; title: string; detail: string }) {
+  return (
+    <div className={cn('rounded-lg border px-3 py-3', active ? 'border-teal-200 bg-teal-50' : 'border-slate-100 bg-slate-50')}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-medium text-slate-900">{title}</span>
+        <SoftBadge tone={active ? 'good' : 'neutral'}>{active ? 'Active' : 'Standby'}</SoftBadge>
+      </div>
+      <div className="mt-1 text-xs leading-5 text-slate-500">{detail}</div>
+    </div>
+  );
+}
+
 function getProviderName(baseUrl: string) {
   const lower = baseUrl.toLowerCase();
   if (lower.includes('deepseek')) return 'DeepSeek';
@@ -2320,10 +2500,10 @@ function InsightsPage({ overview, usage, vaults, models, users }: { overview?: O
         <div className="mt-4 grid grid-cols-2 gap-3">
           {models.map(model => (
             <div key={model.id} className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-              <div>
-                <div className="text-sm font-medium">{model.name}</div>
-                <div className="text-xs text-slate-500">{model.model}</div>
-              </div>
+                <div>
+                  <div className="text-sm font-medium">{model.name}</div>
+                  <div className="text-xs text-slate-500">{model.model}</div>
+                </div>
               <span className={cn('rounded-full px-2 py-1 text-xs', model.isDefault ? 'bg-teal-50 text-teal-700' : 'bg-slate-100 text-slate-500')}>{model.isDefault ? 'Default' : 'Standby'}</span>
             </div>
           ))}
@@ -2853,6 +3033,31 @@ function Field({ label, value, onChange, placeholder, type = 'text' }: {
         value={value}
         placeholder={placeholder}
         onChange={event => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
+function NumberField({ label, value, onChange, min, max }: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-medium text-slate-500">{label}</span>
+      <input
+        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-teal-700 focus:ring-4 focus:ring-teal-700/10"
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={event => {
+          const next = Number(event.target.value);
+          if (Number.isFinite(next)) onChange(next);
+        }}
       />
     </label>
   );

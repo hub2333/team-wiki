@@ -1,4 +1,4 @@
-import type { AdminUser, LoginResponse, MeResponse, Message, ModelConfig, Overview, Session, SystemPromptResponse, UsageSummary, Vault, VaultStatus } from '../types';
+import type { AdminUser, AgentConfig, LoginResponse, MeResponse, Message, ModelConfig, Overview, Session, SystemPromptResponse, UsageSummary, Vault, VaultStatus } from '../types';
 
 const TOKEN_KEY = 'team-wiki-react-ui.token';
 
@@ -160,6 +160,24 @@ export function deleteModel(token: string, id: string) {
 
 export function testModel(token: string, id: string) {
   return apiFetch<{ ok: boolean; checks: Record<string, boolean>; message: string; latencyMs?: number; status?: number }>(`/api/admin/models/${id}/test`, token, { method: 'POST' });
+}
+
+export function getAgentConfig(token: string) {
+  return apiFetch<{ agent: AgentConfig }>('/api/admin/agent', token);
+}
+
+export function updateAgentConfig(token: string, input: AgentConfig) {
+  return apiFetch<{ agent: AgentConfig }>('/api/admin/agent', token, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
+export function testAgentConfig(token: string, input: AgentConfig) {
+  return apiFetch<{ ok: boolean; checks: Record<string, boolean>; message: string; latencyMs?: number; status?: number }>('/api/admin/agent/test', token, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 export function getUsageSummary(token: string) {

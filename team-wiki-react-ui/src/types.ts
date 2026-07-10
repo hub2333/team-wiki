@@ -1,4 +1,11 @@
 export type Role = 'admin' | 'user';
+export type AgentProvider = 'openai_agents' | 'claude_code';
+
+export interface AgentConfig {
+  provider: AgentProvider;
+  claudeModel: string;
+  maxTurns: number;
+}
 
 export interface User {
   id: string;

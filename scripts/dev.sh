@@ -30,7 +30,7 @@ echo "========================================="
 echo "  Starting server (watch) ..."
 echo "========================================="
 cd "$ROOT_DIR/team-wiki-server"
-npm run dev -- --env-file "$ENV_FILE_NAME" &
+ENV_FILE="$ENV_FILE_NAME" npm run dev &
 SERVER_PID=$!
 echo "server PID: $SERVER_PID"
 

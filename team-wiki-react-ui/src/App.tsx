@@ -1515,7 +1515,7 @@ function CopyMessageButton({ text }: { text: string }) {
 }
 
 function KnowledgeSources({ sources }: { sources: ChatSource[] }) {
-  const visibleSources = dedupeSources(sources).slice(0, 6);
+  const visibleSources = dedupeSources(sources).slice(0, 30);
   if (!visibleSources.length) return null;
 
   return (
